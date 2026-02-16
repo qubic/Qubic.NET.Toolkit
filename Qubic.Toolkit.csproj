@@ -11,6 +11,7 @@
     <!-- Windows exe icon -->
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <AssemblyName>Qubic.Net.Toolkit</AssemblyName>
+    <Version>0.2.0</Version>
   </PropertyGroup>
 
   <!-- ASP.NET Core global usings (not included by Razor SDK unlike Web SDK) -->
