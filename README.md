@@ -23,7 +23,7 @@ A cross-platform desktop application for interacting with the Qubic network. Run
 
 ## Running Pre-Built Releases
 
-Download the latest release for your platform from the [Releases](https://github.com/qubic/Qubic.Net/releases) page.
+Download the latest release for your platform from the [Releases](https://github.com/qubic/Qubic.Net.Toolkit/releases) page.
 
 > [!IMPORTANT]
 > **Always verify the SHA-256 hashes** to ensure files have not been tampered with.
@@ -80,6 +80,8 @@ xattr -d com.apple.quarantine Qubic.Net.Toolkit
 ./Qubic.Net.Toolkit --server
 ```
 
+> **Tip:** If macOS Gatekeeper blocks the app, you can also right-click (or Control-click) the binary in Finder and select **Open** to bypass the warning.
+
 ### Linux
 
 Desktop mode requires **GLIBC 2.38+** and **WebKitGTK**. Supported distributions:
@@ -119,52 +121,37 @@ To run in server mode directly (no GLIBC 2.38 or WebKitGTK required):
 
 ## Running From Source
 
-### Desktop Mode (default)
-
-Opens a native desktop window:
+Requires [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 
 ```bash
-dotnet run --project tools/Qubic.Toolkit
+git clone --recursive https://github.com/qubic/Qubic.Net.Toolkit.git
+cd Qubic.Net.Toolkit
+
+# Desktop mode (native window)
+dotnet run
+
+# Server mode (opens in browser)
+dotnet run -- --server
 ```
 
-### Server Mode
+> **Note:** The `--recursive` flag is required to fetch the [Qubic.Net](https://github.com/qubic/Qubic.Net) submodule under `deps/`.
 
-Runs as a Blazor Server app and opens the browser:
+## Release Builds
 
 ```bash
-dotnet run --project tools/Qubic.Toolkit -- --server
+./publish.sh
 ```
 
-## Publishing
+Produces zip archives with SHA-256 hashes for:
+- `win-x64`
+- `osx-x64`
+- `osx-arm64`
+- `linux-x64`
 
-### Windows Single-File
+## Security
 
-```bash
-dotnet publish tools/Qubic.Toolkit -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
-```
-
-### macOS (Intel)
-
-```bash
-dotnet publish tools/Qubic.Toolkit -c Release -r osx-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
-```
-
-### macOS (Apple Silicon)
-
-```bash
-dotnet publish tools/Qubic.Toolkit -c Release -r osx-arm64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
-```
-
-### Linux
-
-Requires WebKitGTK (`libwebkit2gtk-4.1`):
-
-```bash
-# Ubuntu/Debian
-sudo apt install libwebkit2gtk-4.1-0
-
-dotnet publish tools/Qubic.Toolkit -c Release -r linux-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
-```
+> [!WARNING]
+> **Server mode** uses unencrypted HTTP on localhost. A local proxy or other software on the same machine could intercept the communication between your browser and the app, including your seed. Prefer **desktop mode** when possible. Only use `--server` on machines you fully trust.
 
 ## Architecture
 
@@ -173,6 +160,7 @@ dotnet publish tools/Qubic.Toolkit -c Release -r linux-x64 --self-contained -p:P
 - **Server**: Standard Blazor Server with interactive server-side rendering
 - **Static assets**: Bootstrap 5.3.2 and Bootstrap Icons 1.11.3 bundled locally (no CDN)
 - **Single-file publish**: wwwroot is embedded as a zip resource and extracted to `%LOCALAPPDATA%/Qubic.Toolkit` on first run (auto-refreshes when the build changes)
+- **Libraries**: [Qubic.Net](https://github.com/qubic/Qubic.Net) included as a git submodule under `deps/`
 
 ## Screenshots
 <img width="500"  alt="image" src="https://github.com/user-attachments/assets/37a05bb2-3471-4fa9-9e9b-247af50b34c5" />
