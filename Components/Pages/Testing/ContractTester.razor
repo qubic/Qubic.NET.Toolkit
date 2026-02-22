@@ -1,0 +1,545 @@
+@page "/testing/sc-tester"
+@using Qubic.ContractGen.Parsing
+@using Qubic.Core.Entities
+@inject DynamicContractService ContractService
+@inject QubicBackendService Backend
+@inject SeedSessionService Seed
+@inject TickMonitorService TickMonitor
+@inject TransactionTrackerService TxTracker
+
+<h4><i class="bi bi-file-code me-2"></i>Smart Contract Tester</h4>
+<p class="text-muted">Parse C++ contract headers and call functions/procedures dynamically.</p>
+
+<div class="alert alert-warning py-2 px-3 small mb-3">
+    <i class="bi bi-exclamation-triangle me-1"></i>
+    <strong>Caution:</strong> Loading and parsing external code may be harmful. Only use contract headers from trusted sources.
+</div>
+
+@* ── SOURCE INPUT ── *@
+<div class="card mb-3">
+    <div class="card-header">Contract Source</div>
+    <div class="card-body">
+        <div class="d-flex gap-2 mb-2">
+            <button class="btn btn-sm @(_inputMode == "paste" ? "btn-primary" : "btn-outline-secondary")"
+                    @onclick='() => _inputMode = "paste"'>Paste Code</button>
+            <button class="btn btn-sm @(_inputMode == "url" ? "btn-primary" : "btn-outline-secondary")"
+                    @onclick='() => _inputMode = "url"'>Fetch from URL</button>
+        </div>
+        @if (_inputMode == "paste")
+        {
+            <textarea class="form-control mono" rows="10" @bind="_cppSource"
+                      placeholder="Paste C++ contract header (e.g. Qx.h)..."></textarea>
+        }
+        else
+        {
+            <div class="input-group mb-2">
+                <input class="form-control form-control-sm" @bind="_sourceUrl"
+                       placeholder="https://github.com/user/repo/blob/main/Contract.h" />
+                <button class="btn btn-sm btn-outline-primary" @onclick="FetchFromUrl"
+                        disabled="@_fetching">@(_fetching ? "Fetching..." : "Fetch")</button>
+            </div>
+            @if (!string.IsNullOrEmpty(_cppSource))
+            {
+                <div class="small text-success mb-1">Fetched @_cppSource.Length characters.</div>
+            }
+        }
+        @if (_fetchError != null)
+        {
+            <div class="alert alert-danger mt-2 py-1 px-2 small mb-0">@_fetchError</div>
+        }
+        <div class="row g-2 mt-2">
+            <div class="col-md-4">
+                <label class="form-label small mb-0">Contract Index (on-chain)</label>
+                <input type="number" class="form-control form-control-sm" @bind="_contractIndex" min="1" max="255" />
+            </div>
+        </div>
+        <button class="btn btn-primary mt-2" @onclick="ParseSource"
+                disabled="@string.IsNullOrWhiteSpace(_cppSource)">Parse</button>
+
+        @if (_parseResult?.Error != null)
+        {
+            <div class="alert alert-danger mt-2 py-1 px-2 small mb-0">@_parseResult.Error</div>
+        }
+        @if (_parseResult?.Warnings.Count > 0)
+        {
+            <div class="alert alert-warning mt-2 py-1 px-2 small mb-0">
+                @foreach (var w in _parseResult.Warnings)
+                {
+                    <div>@w</div>
+                }
+            </div>
+        }
+        @if (_parseResult?.Definition != null)
+        {
+            var def = _parseResult.Definition;
+            <div class="mt-2 small text-muted">
+                Parsed <strong>@def.CSharpName</strong>: @def.Functions.Count function(s), @def.Procedures.Count procedure(s)
+            </div>
+        }
+    </div>
+</div>
+
+@if (_parseResult?.Definition != null)
+{
+    var def = _parseResult.Definition;
+
+    @* ── FUNCTIONS (read-only queries) ── *@
+    @if (def.Functions.Count > 0)
+    {
+        <h5>Functions <span class="badge bg-secondary">@def.Functions.Count</span></h5>
+        @foreach (var func in def.Functions)
+        {
+            var key = $"f_{func.Name}";
+            var isExpanded = _expanded.Contains(key);
+            var state = _callStates.GetValueOrDefault(key);
+            var isEmpty = func.Input.IsEmpty;
+
+            <div class="card mb-2">
+                <div class="card-header d-flex align-items-center gap-2" style="cursor:pointer"
+                     @onclick="() => ToggleExpand(key)">
+                    <span>@(isExpanded ? "\u25BC" : "\u25B6")</span>
+                    <strong>@func.Name</strong>
+                    <span class="badge bg-secondary">inputType=@func.InputType</span>
+                    @if (isEmpty)
+                    {
+                        <span class="badge bg-success">empty input</span>
+                    }
+                    else
+                    {
+                        <span class="badge bg-info text-dark">@func.Input.Fields.Count field(s)</span>
+                    }
+                </div>
+
+                @if (isExpanded)
+                {
+                    <div class="card-body">
+                        @if (!isEmpty)
+                        {
+                            @RenderStructForm(key, func.Input)
+                        }
+
+                        <button class="btn btn-sm btn-primary" disabled="@(state?.Loading == true)"
+                                @onclick="() => CallFunction(func)">
+                            @(state?.Loading == true ? "Calling..." : "Call")
+                        </button>
+
+                        @RenderCallResult(key, state, func.Output)
+                    </div>
+                }
+            </div>
+        }
+    }
+
+    @* ── PROCEDURES (transactions) ── *@
+    @if (def.Procedures.Count > 0)
+    {
+        <h5 class="mt-3">Procedures <span class="badge bg-secondary">@def.Procedures.Count</span></h5>
+
+        @if (!CanBroadcast)
+        {
+            <div class="alert alert-warning py-1 px-2 small">
+                Procedures require RPC or DirectNetwork backend for broadcasting.
+            </div>
+        }
+        else if (!Seed.HasSeed)
+        {
+            <div class="alert alert-warning py-1 px-2 small">
+                Unlock a seed in Settings to execute procedures.
+            </div>
+        }
+
+        @foreach (var proc in def.Procedures)
+        {
+            var key = $"p_{proc.Name}";
+            var isExpanded = _expanded.Contains(key);
+            var state = _callStates.GetValueOrDefault(key);
+            var isEmpty = proc.Input.IsEmpty;
+
+            <div class="card mb-2">
+                <div class="card-header d-flex align-items-center gap-2" style="cursor:pointer"
+                     @onclick="() => ToggleExpand(key)">
+                    <span>@(isExpanded ? "\u25BC" : "\u25B6")</span>
+                    <strong>@proc.Name</strong>
+                    <span class="badge bg-warning text-dark">procedure</span>
+                    <span class="badge bg-secondary">inputType=@proc.InputType</span>
+                    @if (!isEmpty)
+                    {
+                        <span class="badge bg-info text-dark">@proc.Input.Fields.Count field(s)</span>
+                    }
+                </div>
+
+                @if (isExpanded)
+                {
+                    <div class="card-body">
+                        @if (!isEmpty)
+                        {
+                            @RenderStructForm(key, proc.Input)
+                        }
+
+                        <div class="row g-2 mb-2">
+                            <div class="col-md-4">
+                                <label class="form-label small mb-0">Amount (QU)</label>
+                                <input type="number" class="form-control form-control-sm"
+                                       value="@(GetStringValue(key, "__amount"))"
+                                       @onchange="@(e => SetFormValue(key, "__amount", e.Value?.ToString() ?? string.Empty))" />
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label small mb-0">Tick Offset</label>
+                                <input type="number" class="form-control form-control-sm"
+                                       value="@(GetStringValue(key, "__tickOffset"))"
+                                       @onchange="@(e => SetFormValue(key, "__tickOffset", e.Value?.ToString() ?? string.Empty))"
+                                       placeholder="5" />
+                            </div>
+                        </div>
+
+                        <button class="btn btn-sm btn-danger" @onclick="() => ExecuteProcedure(proc)"
+                                disabled="@(state?.Loading == true || !CanBroadcast || !Seed.HasSeed)">
+                            @(state?.Loading == true ? "Executing..." : "Execute")
+                        </button>
+
+                        @RenderCallResult(key, state, proc.Output)
+                    </div>
+                }
+            </div>
+        }
+    }
+}
+
+@code {
+    private string _inputMode = "paste";
+    private string _cppSource = "";
+    private string _sourceUrl = "https://github.com/qubic/core/blob/main/src/contracts/MsVault.h";
+    private int _contractIndex = 1;
+    private bool _fetching;
+    private string? _fetchError;
+    private ParseResult? _parseResult;
+
+    private readonly HashSet<string> _expanded = new();
+    private readonly Dictionary<string, Dictionary<string, object?>> _formValues = new();
+    private readonly Dictionary<string, CallState> _callStates = new();
+
+    private bool CanBroadcast => Backend.ActiveBackend is QueryBackend.Rpc or QueryBackend.DirectNetwork;
+
+    private async Task FetchFromUrl()
+    {
+        _fetching = true;
+        _fetchError = null;
+        try
+        {
+            _cppSource = await ContractService.FetchSourceFromUrl(_sourceUrl);
+        }
+        catch (Exception ex)
+        {
+            _fetchError = ex.Message;
+        }
+        finally
+        {
+            _fetching = false;
+        }
+    }
+
+    private void ParseSource()
+    {
+        _parseResult = ContractService.ParseSource(_cppSource, _contractIndex);
+        _callStates.Clear();
+        _formValues.Clear();
+        _expanded.Clear();
+    }
+
+    private void ToggleExpand(string key)
+    {
+        if (!_expanded.Remove(key))
+            _expanded.Add(key);
+    }
+
+    private Dictionary<string, object?> GetFormValues(string key)
+    {
+        if (!_formValues.TryGetValue(key, out var values))
+        {
+            values = new Dictionary<string, object?>();
+            _formValues[key] = values;
+        }
+        return values;
+    }
+
+    private string GetStringValue(string key, string field)
+        => GetFormValues(key).TryGetValue(field, out var v) ? v?.ToString() ?? "" : "";
+
+    private bool GetBoolValue(string key, string field)
+        => GetFormValues(key).TryGetValue(field, out var v) && v is true;
+
+    private void SetFormValue(string key, string field, object value)
+        => GetFormValues(key)[field] = value;
+
+    private async Task CallFunction(FunctionDef func)
+    {
+        var key = $"f_{func.Name}";
+        var state = new CallState { Loading = true };
+        _callStates[key] = state;
+        StateHasChanged();
+
+        try
+        {
+            var inputBytes = BuildInputBytes(key, func.Input);
+            state.RawInputHex = Convert.ToHexString(inputBytes).ToLowerInvariant();
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var responseData = await Backend.QuerySmartContractAsync(
+                (uint)_contractIndex, (uint)func.InputType, inputBytes);
+            sw.Stop();
+
+            state.ResponseBytes = responseData.Length;
+            state.ElapsedMs = sw.ElapsedMilliseconds;
+            state.RawOutputHex = Convert.ToHexString(responseData).ToLowerInvariant();
+            state.OutputValues = ContractService.DeserializeOutput(func.Output, responseData);
+            state.OutputStruct = func.Output;
+        }
+        catch (Exception ex)
+        {
+            state.Error = ex.Message;
+        }
+        finally
+        {
+            state.Loading = false;
+        }
+    }
+
+    private async Task ExecuteProcedure(ProcedureDef proc)
+    {
+        var key = $"p_{proc.Name}";
+        var state = new CallState { Loading = true };
+        _callStates[key] = state;
+        StateHasChanged();
+
+        try
+        {
+            var inputBytes = BuildInputBytes(key, proc.Input);
+            state.RawInputHex = Convert.ToHexString(inputBytes).ToLowerInvariant();
+
+            long.TryParse(GetStringValue(key, "__amount"), out var amount);
+            if (!int.TryParse(GetStringValue(key, "__tickOffset"), out var tickOffset) || tickOffset <= 0)
+                tickOffset = 5;
+
+            var tick = TickMonitor.Tick + (uint)tickOffset;
+            var payload = new GenericContractPayload((ushort)proc.InputType, inputBytes);
+            var dest = QubicIdentity.FromPublicKey(QubicContracts.GetContractPublicKey(_contractIndex));
+
+            var tx = Seed.CreateAndSignTransaction(dest, amount, tick, payload);
+            var result = await Backend.BroadcastTransactionAsync(tx);
+
+            state.TxHash = tx.TransactionHash;
+            state.TxSuccess = true;
+            state.TxMessage = $"Broadcast OK (peers: {result.PeersBroadcasted})";
+
+            if (tx.TransactionHash != null)
+            {
+                TxTracker.Track(new Qubic.Services.TrackedTransaction
+                {
+                    Hash = tx.TransactionHash,
+                    Source = Seed.Identity?.ToString() ?? "",
+                    Destination = dest.ToString(),
+                    Amount = amount,
+                    TargetTick = tick,
+                    Description = $"SC Tester: {proc.Name}",
+                    InputType = (ushort)proc.InputType,
+                    PayloadHex = state.RawInputHex
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            state.Error = ex.Message;
+        }
+        finally
+        {
+            state.Loading = false;
+        }
+    }
+
+    private byte[] BuildInputBytes(string key, StructDef inputDef)
+    {
+        if (inputDef.IsEmpty)
+            return [];
+
+        var formVals = GetFormValues(key);
+        var typedValues = new Dictionary<string, object?>();
+        foreach (var field in inputDef.Fields)
+        {
+            var raw = formVals.GetValueOrDefault(field.Name)?.ToString();
+            if (field.IsArray)
+            {
+                // Multiline textarea → array of converted values
+                var elemType = field.ArrayElementType ?? field.CppType;
+                var lines = (raw ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                var arr = new object?[field.ArrayLength];
+                for (int i = 0; i < field.ArrayLength; i++)
+                {
+                    var lineVal = i < lines.Length ? lines[i] : null;
+                    arr[i] = DynamicContractService.ConvertFormValue(elemType, lineVal);
+                }
+                typedValues[field.Name] = arr;
+            }
+            else
+            {
+                typedValues[field.Name] = DynamicContractService.ConvertFormValue(field.CppType, raw);
+            }
+        }
+        return ContractService.SerializeInput(inputDef, typedValues);
+    }
+
+    private RenderFragment RenderStructForm(string key, StructDef def) => __builder =>
+    {
+        <div class="mb-3">
+            @foreach (var field in def.Fields)
+            {
+                if (field.IsArray)
+                {
+                    var elemType = field.ArrayElementType ?? field.CppType;
+                    var isIdArray = elemType is "id" or "m256i";
+                    var rows = field.ArrayLength <= 4 ? field.ArrayLength : Math.Min(field.ArrayLength, 8);
+                    <div class="mb-2">
+                        <label class="form-label small mb-0">
+                            @field.Name
+                            <span class="text-muted">(@(DynamicContractService.GetTypeLabel(elemType))[@field.ArrayLength])</span>
+                        </label>
+                        <textarea class="form-control form-control-sm mono" rows="@rows"
+                                  placeholder="@(isIdArray ? "One identity per line" : "One value per line") (@field.ArrayLength total)"
+                                  value="@GetStringValue(key, field.Name)"
+                                  @onchange="@(e => SetFormValue(key, field.Name, e.Value?.ToString() ?? string.Empty))" />
+                    </div>
+                }
+                else if (field.CppType is "bit" or "bool")
+                {
+                    <div class="mb-2">
+                        <label class="form-label small mb-0">
+                            @field.Name <span class="text-muted">(bool)</span>
+                        </label>
+                        <div>
+                            <input type="checkbox" class="form-check-input"
+                                   checked="@GetBoolValue(key, field.Name)"
+                                   @onchange="e => SetFormValue(key, field.Name, e.Value is true)" />
+                        </div>
+                    </div>
+                }
+                else if (field.CppType is "id" or "m256i")
+                {
+                    <div class="mb-2">
+                        <label class="form-label small mb-0">
+                            @field.Name <span class="text-muted">(identity or hex)</span>
+                        </label>
+                        <input class="form-control form-control-sm mono"
+                               placeholder="60-char identity or hex bytes"
+                               value="@GetStringValue(key, field.Name)"
+                               @onchange="@(e => SetFormValue(key, field.Name, e.Value?.ToString() ?? string.Empty))" />
+                    </div>
+                }
+                else
+                {
+                    var isAssetName = field.CppType == "uint64" &&
+                        (field.Name.Contains("assetName", StringComparison.OrdinalIgnoreCase) ||
+                         field.Name.Contains("unitOfMeasurement", StringComparison.OrdinalIgnoreCase));
+                    <div class="mb-2">
+                        <label class="form-label small mb-0">
+                            @field.Name
+                            <span class="text-muted">(@DynamicContractService.GetTypeLabel(field.CppType))</span>
+                        </label>
+                        <input type="@(isAssetName ? "text" : "number")" class="form-control form-control-sm"
+                               placeholder="@(isAssetName ? "e.g. QX, CFB (or number)" : "0")"
+                               value="@GetStringValue(key, field.Name)"
+                               @onchange="@(e => SetFormValue(key, field.Name, e.Value?.ToString() ?? string.Empty))" />
+                    </div>
+                }
+            }
+        </div>
+    };
+
+    private RenderFragment RenderCallResult(string key, CallState? state, StructDef outputDef) => __builder =>
+    {
+        if (state?.Error != null)
+        {
+            <div class="alert alert-danger mt-2 mb-0 py-1 px-2 small">@state.Error</div>
+        }
+
+        if (state?.TxHash != null)
+        {
+            <div class="alert @(state.TxSuccess ? "alert-success" : "alert-danger") mt-2 mb-0 py-1 px-2 small">
+                @state.TxMessage
+                <div class="mono small">@state.TxHash</div>
+            </div>
+        }
+
+        if (state?.RawOutputHex != null)
+        {
+            <div class="mt-2">
+                <div class="small text-muted mb-1">
+                    Response: @state.ResponseBytes bytes in @(state.ElapsedMs)ms
+                </div>
+                <details class="mb-2">
+                    <summary class="small text-muted" style="cursor:pointer">Raw hex</summary>
+                    <div class="mt-1 p-2 bg-light rounded" style="font-size:0.8em">
+                        <div><strong class="text-muted">Input (@((state.RawInputHex?.Length ?? 0) / 2) bytes):</strong></div>
+                        <div class="mono" style="word-break:break-all">@(string.IsNullOrEmpty(state.RawInputHex) ? "(empty)" : state.RawInputHex)</div>
+                        <div class="mt-1"><strong class="text-muted">Output (@state.ResponseBytes bytes):</strong></div>
+                        <div class="mono" style="word-break:break-all">@(state.RawOutputHex.Length > 0 ? state.RawOutputHex : "(empty)")</div>
+                    </div>
+                </details>
+            </div>
+        }
+
+        if (state?.OutputValues != null && state.OutputValues.Count > 0 && state.OutputStruct != null)
+        {
+            <table class="table table-sm table-bordered output-table mb-0 mt-2">
+                <thead>
+                    <tr><th>Field</th><th>Type</th><th>Value</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var field in state.OutputStruct.Fields)
+                    {
+                        if (!state.OutputValues.TryGetValue(field.Name, out var value)) continue;
+
+                        if (value is object?[] arr)
+                        {
+                            var nonNull = arr.Count(a => a != null && !IsZeroValue(a));
+                            <tr>
+                                <td>@field.Name</td>
+                                <td class="small">@(field.ArrayElementType ?? field.CppType)[@field.ArrayLength]</td>
+                                <td class="mono">[@nonNull non-zero / @field.ArrayLength total]</td>
+                            </tr>
+                        }
+                        else
+                        {
+                            <tr>
+                                <td>@field.Name</td>
+                                <td class="small">@DynamicContractService.GetTypeLabel(field.CppType)</td>
+                                <td class="mono">@DynamicContractService.FormatOutputValue(field.Name, field.CppType, value)</td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        }
+    };
+
+    private static bool IsZeroValue(object? value)
+    {
+        if (value == null) return true;
+        if (value is byte[] bytes) return bytes.All(b => b == 0);
+        if (value is 0 or 0U or 0UL or 0L or (ushort)0 or (short)0 or (byte)0 or (sbyte)0 or false) return true;
+        return false;
+    }
+
+    private class CallState
+    {
+        public bool Loading { get; set; }
+        public string? Error { get; set; }
+        public int ResponseBytes { get; set; }
+        public long ElapsedMs { get; set; }
+        public string? RawInputHex { get; set; }
+        public string? RawOutputHex { get; set; }
+        public Dictionary<string, object?>? OutputValues { get; set; }
+        public StructDef? OutputStruct { get; set; }
+        public string? TxHash { get; set; }
+        public bool TxSuccess { get; set; }
+        public string? TxMessage { get; set; }
+    }
+}

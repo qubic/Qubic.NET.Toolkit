@@ -52,6 +52,7 @@ class Program
 
         services.AddSingleton(new QubicSettingsService("QubicToolkit"));
         services.AddSingleton<ContractDiscovery>();
+        services.AddSingleton<DynamicContractService>();
         services.AddSingleton<QubicBackendService>();
         services.AddSingleton<SeedSessionService>();
         services.AddSingleton<TickMonitorService>();

@@ -11,7 +11,7 @@
     <!-- Windows exe icon -->
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <AssemblyName>Qubic.Net.Toolkit</AssemblyName>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
   </PropertyGroup>
 
   <!-- ASP.NET Core global usings (not included by Razor SDK unlike Web SDK) -->
@@ -42,6 +42,14 @@
     <Compile Remove="deps/**" />
     <Content Remove="deps/**" />
     <None Remove="deps/**" />
+  </ItemGroup>
+
+  <!-- Re-include ContractGen parsing files for runtime C++ header parsing -->
+  <ItemGroup>
+    <Compile Include="deps/Qubic.Net/tools/Qubic.ContractGen/Parsing/ContractModel.cs" Link="Services/ContractParsing/ContractModel.cs" />
+    <Compile Include="deps/Qubic.Net/tools/Qubic.ContractGen/Parsing/CppHeaderParser.cs" Link="Services/ContractParsing/CppHeaderParser.cs" />
+    <Compile Include="deps/Qubic.Net/tools/Qubic.ContractGen/Parsing/TypeMapper.cs" Link="Services/ContractParsing/TypeMapper.cs" />
+    <Compile Include="deps/Qubic.Net/tools/Qubic.ContractGen/Generation/CSharpEmitter.cs" Link="Services/ContractParsing/CSharpEmitter.cs" />
   </ItemGroup>
 
   <ItemGroup>

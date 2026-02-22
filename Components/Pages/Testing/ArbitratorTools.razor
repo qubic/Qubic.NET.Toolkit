@@ -1,0 +1,234 @@
+@page "/testing/arbitrator"
+@using System.Buffers.Binary
+@using Qubic.Core.Entities
+@using Qubic.Serialization
+@inject QubicBackendService Backend
+@inject SeedSessionService Seed
+
+<h4><i class="bi bi-shield-lock me-2"></i>Arbitrator Tools</h4>
+<p class="text-muted">Testnet-only: issue computor lists and manage epoch lifecycle.</p>
+
+@if (Backend.ActiveBackend != QueryBackend.DirectNetwork)
+{
+    <div class="alert alert-warning">This tool requires DirectNetwork backend. Switch in Settings.</div>
+    return;
+}
+
+@if (!Seed.HasSeed)
+{
+    <div class="alert alert-warning">No seed session active. Open a seed session in Settings first.</div>
+    return;
+}
+
+@* ── ARBITRATOR IDENTITY ── *@
+<div class="card mb-3">
+    <div class="card-header">Arbitrator Identity</div>
+    <div class="card-body">
+        <div class="small">Identity: <span class="mono">@Seed.Identity</span></div>
+        @if (Seed.ActiveLabel != null)
+        {
+            <div class="small text-muted">Label: @Seed.ActiveLabel</div>
+        }
+    </div>
+</div>
+
+@* ── BROADCAST COMPUTOR LIST ── *@
+<div class="card mb-3">
+    <div class="card-header">Broadcast Computor List</div>
+    <div class="card-body">
+        <div class="row g-2 mb-2">
+            <div class="col-md-4">
+                <label class="form-label small mb-0">Epoch</label>
+                <input type="number" class="form-control form-control-sm" @bind="_epoch" />
+            </div>
+        </div>
+
+        <label class="form-label small mb-0">Computor Identities (676 total)</label>
+        <div class="d-flex gap-2 mb-1">
+            <button class="btn btn-sm btn-outline-secondary" @onclick="GenerateRandomComputors">
+                Generate 676 Random
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="FillWithSessionIdentity">
+                Fill With Session Identity
+            </button>
+        </div>
+        <textarea class="form-control mono" rows="8" @bind="_computorListText"
+                  placeholder="One identity per line (676 total)..."></textarea>
+        <div class="small text-muted mt-1">@ComputorCount / @NumComputors identities</div>
+
+        <button class="btn btn-primary mt-2" @onclick="BroadcastComputors"
+                disabled="@_broadcasting">
+            @(_broadcasting ? "Broadcasting..." : "Broadcast Computor List")
+        </button>
+
+        @if (_broadcastResult != null)
+        {
+            <div class="alert @(_broadcastSuccess ? "alert-success" : "alert-danger") mt-2 py-1 px-2 small mb-0">
+                @_broadcastResult
+            </div>
+        }
+    </div>
+</div>
+
+@* ── RAW BROADCAST ── *@
+<div class="card mb-3">
+    <div class="card-header">Raw Packet Broadcast</div>
+    <div class="card-body">
+        <div class="row g-2 mb-2">
+            <div class="col-md-3">
+                <label class="form-label small mb-0">Packet Type</label>
+                <input type="number" class="form-control form-control-sm" @bind="_rawPacketType" min="0" max="255" />
+            </div>
+            <div class="col-md-9">
+                <label class="form-label small mb-0">Payload (hex)</label>
+                <input class="form-control form-control-sm mono" @bind="_rawPayloadHex"
+                       placeholder="Payload bytes in hex (without header)" />
+            </div>
+        </div>
+        <button class="btn btn-sm btn-outline-danger" @onclick="SendRawPacket"
+                disabled="@_sendingRaw">
+            @(_sendingRaw ? "Sending..." : "Send Packet")
+        </button>
+        @if (_rawResult != null)
+        {
+            <div class="alert @(_rawSuccess ? "alert-success" : "alert-danger") mt-2 py-1 px-2 small mb-0">
+                @_rawResult
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private const int NumComputors = 676;
+
+    private int _epoch = 1;
+    private string _computorListText = "";
+    private bool _broadcasting;
+    private bool _broadcastSuccess;
+    private string? _broadcastResult;
+
+    private int _rawPacketType = 0;
+    private string _rawPayloadHex = "";
+    private bool _sendingRaw;
+    private bool _rawSuccess;
+    private string? _rawResult;
+
+    private int ComputorCount => string.IsNullOrWhiteSpace(_computorListText) ? 0
+        : _computorListText.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Length;
+
+    private void GenerateRandomComputors()
+    {
+        var lines = new string[NumComputors];
+        var crypt = new Qubic.Crypto.QubicCrypt();
+        for (int i = 0; i < NumComputors; i++)
+        {
+            var seed = new string(Enumerable.Range(0, 55).Select(_ => (char)('a' + Random.Shared.Next(26))).ToArray());
+            var pk = crypt.GetPublicKey(seed);
+            lines[i] = QubicIdentity.FromPublicKey(pk).Identity;
+        }
+        _computorListText = string.Join('\n', lines);
+    }
+
+    private void FillWithSessionIdentity()
+    {
+        var identity = Seed.Identity?.ToString();
+        if (string.IsNullOrEmpty(identity)) return;
+        _computorListText = string.Join('\n', Enumerable.Repeat(identity, NumComputors));
+    }
+
+    private async Task BroadcastComputors()
+    {
+        _broadcasting = true;
+        _broadcastResult = null;
+
+        try
+        {
+            var identities = _computorListText.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            if (identities.Length < NumComputors)
+            {
+                _broadcastResult = $"Need {NumComputors} identities, got {identities.Length}.";
+                _broadcastSuccess = false;
+                return;
+            }
+
+            // Build Computors payload: epoch(2) + publicKeys(676*32) + signature(64)
+            var dataSize = 2 + NumComputors * 32;
+            var totalSize = dataSize + 64;
+            var computorsData = new byte[totalSize];
+
+            // Write epoch (LE uint16)
+            BinaryPrimitives.WriteUInt16LittleEndian(computorsData.AsSpan(0), (ushort)_epoch);
+
+            // Write 676 public keys
+            for (int i = 0; i < NumComputors; i++)
+            {
+                var pubKey = QubicIdentity.FromIdentity(identities[i].Trim()).PublicKey;
+                pubKey.CopyTo(computorsData.AsSpan(2 + i * 32));
+            }
+
+            // Sign the epoch + publicKeys portion using the seed session
+            var signature = Seed.SignMessage(computorsData.AsSpan(0, dataSize).ToArray());
+            signature.CopyTo(computorsData.AsSpan(dataSize));
+
+            // Build packet: header(8) + computorsData
+            var packetSize = QubicPacketHeader.Size + computorsData.Length;
+            var packet = new byte[packetSize];
+
+            // Write broadcast header with dejavu=0 for propagation
+            var header = QubicPacketHeader.Create(QubicPacketTypes.BroadcastComputors, computorsData.Length, dejavu: 0);
+            uint sizeAndType = (uint)header.PacketSize | ((uint)header.Type << 24);
+            BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(0), sizeAndType);
+            BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(4), header.Dejavu);
+            computorsData.CopyTo(packet.AsSpan(QubicPacketHeader.Size));
+
+            await Backend.SendRawPacketAsync(packet);
+            _broadcastSuccess = true;
+            _broadcastResult = $"Computor list broadcast sent ({packet.Length} bytes) for epoch {_epoch}.";
+        }
+        catch (Exception ex)
+        {
+            _broadcastSuccess = false;
+            _broadcastResult = ex.Message;
+        }
+        finally
+        {
+            _broadcasting = false;
+        }
+    }
+
+    private async Task SendRawPacket()
+    {
+        _sendingRaw = true;
+        _rawResult = null;
+
+        try
+        {
+            var payload = string.IsNullOrWhiteSpace(_rawPayloadHex) ? Array.Empty<byte>()
+                : Convert.FromHexString(_rawPayloadHex.Trim());
+
+            var packetSize = QubicPacketHeader.Size + payload.Length;
+            var packet = new byte[packetSize];
+
+            var header = QubicPacketHeader.Create((byte)_rawPacketType, payload.Length, dejavu: 0);
+            uint sizeAndType = (uint)header.PacketSize | ((uint)header.Type << 24);
+            BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(0), sizeAndType);
+            BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(4), header.Dejavu);
+            if (payload.Length > 0)
+                payload.CopyTo(packet.AsSpan(QubicPacketHeader.Size));
+
+            await Backend.SendRawPacketAsync(packet);
+            _rawSuccess = true;
+            _rawResult = $"Packet sent: type={_rawPacketType}, {packet.Length} bytes total.";
+        }
+        catch (Exception ex)
+        {
+            _rawSuccess = false;
+            _rawResult = ex.Message;
+        }
+        finally
+        {
+            _sendingRaw = false;
+        }
+    }
+}

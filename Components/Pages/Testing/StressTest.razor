@@ -1,0 +1,1122 @@
+@page "/testing/stress-test"
+@using System.Buffers.Binary
+@using System.Diagnostics
+@using System.Text.Json
+@using System.Text.Json.Serialization
+@using Qubic.Core
+@using Qubic.Core.Entities
+@using Qubic.Serialization
+@inject QubicBackendService Backend
+@inject SeedSessionService SeedSession
+@inject TickMonitorService TickMonitor
+@inject IJSRuntime JS
+@implements IDisposable
+
+<h4><i class="bi bi-lightning-charge me-2"></i>Stress Test</h4>
+<p class="text-muted">Network stress testing and load generation. DirectNetwork only.</p>
+
+@if (Backend.ActiveBackend != QueryBackend.DirectNetwork)
+{
+    <div class="alert alert-warning">This tool requires DirectNetwork backend. Switch in Settings.</div>
+    return;
+}
+
+@* ── MODE TABS ── *@
+<ul class="nav nav-tabs mb-3">
+    <li class="nav-item">
+        <button class="nav-link @(_mode == "quick" ? "active" : "")" @onclick='() => _mode = "quick"' disabled="@_running">
+            <i class="bi bi-lightning-charge me-1"></i>Quick Test
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link @(_mode == "playbook" ? "active" : "")" @onclick='() => _mode = "playbook"' disabled="@_running">
+            <i class="bi bi-journal-code me-1"></i>Playbook
+        </button>
+    </li>
+</ul>
+
+@* ════════════════════════════════════════════════════════════════════ *@
+@* ── QUICK TEST MODE ── *@
+@* ════════════════════════════════════════════════════════════════════ *@
+@if (_mode == "quick")
+{
+    <div class="card mb-3">
+        <div class="card-header">Test Configuration</div>
+        <div class="card-body">
+            @ConfigPanel
+
+            <div class="d-flex gap-2 mt-2">
+                @if (!_running)
+                {
+                    <button class="btn btn-danger" @onclick="StartQuickTest"
+                            disabled="@(_testType == TestType.TransactionFlood && ParseSeedLines(_txSeeds).Length == 0)">
+                        <i class="bi bi-lightning-charge me-1"></i>Start Test
+                    </button>
+                }
+                else
+                {
+                    <button class="btn btn-warning" @onclick="StopTest">
+                        <i class="bi bi-stop-fill me-1"></i>Stop
+                    </button>
+                }
+                @if (!_running && _stats.Sent > 0)
+                {
+                    <button class="btn btn-outline-secondary" @onclick="ResetStats">Reset Stats</button>
+                }
+            </div>
+        </div>
+    </div>
+
+    @* Quick test live stats *@
+    if (_stats.Sent > 0 || _running)
+    {
+        <div class="card mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                Live Stats
+                @if (_running) { <span class="badge bg-danger">Running</span> }
+                else { <span class="badge bg-secondary">Stopped</span> }
+            </div>
+            <div class="card-body">
+                <div class="row g-2 text-center">
+                    <div class="col"><div class="small text-muted">Sent</div><div class="h5 mono mb-0">@_stats.Sent</div></div>
+                    <div class="col"><div class="small text-muted">Success</div><div class="h5 mono mb-0 text-success">@_stats.Success</div></div>
+                    <div class="col"><div class="small text-muted">Failed</div><div class="h5 mono mb-0 text-danger">@_stats.Failed</div></div>
+                    <div class="col"><div class="small text-muted">Elapsed</div><div class="h5 mono mb-0">@FormatElapsed(_stats.Elapsed)</div></div>
+                    <div class="col"><div class="small text-muted">Rate</div><div class="h5 mono mb-0">@FormatStatsRate(_stats) /s</div></div>
+                    <div class="col"><div class="small text-muted">Avg Response</div><div class="h5 mono mb-0">@FormatAvgResponse(_stats)</div></div>
+                </div>
+                @{ var qPct = _totalCount > 0 ? (int)(100.0 * _stats.Sent / _totalCount) : 0; }
+                <div class="progress mt-3" style="height: 6px;">
+                    <div class="progress-bar @(_running ? "bg-danger" : "bg-success")" style="width: @(qPct)%"></div>
+                </div>
+                <div class="small text-muted text-center mt-1">@_stats.Sent / @_totalCount</div>
+            </div>
+        </div>
+    }
+
+    @* Quick test error log *@
+    if (_errorLog.Count > 0)
+    {
+        <div class="card mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                Error Log <span class="badge bg-danger">@_errorLog.Count</span>
+            </div>
+            <div class="card-body p-0">
+                <div style="max-height:200px; overflow-y:auto">
+                    <table class="table table-sm table-hover mb-0 small">
+                        <thead><tr><th style="width:60px">#</th><th>Error</th></tr></thead>
+                        <tbody>
+                            @foreach (var (eidx, emsg) in _errorLog.TakeLast(50))
+                            {
+                                <tr><td class="mono">@eidx</td><td class="text-danger">@emsg</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@* ════════════════════════════════════════════════════════════════════ *@
+@* ── PLAYBOOK MODE ── *@
+@* ════════════════════════════════════════════════════════════════════ *@
+@if (_mode == "playbook")
+{
+    @* ── PLAYBOOK HEADER ── *@
+    <div class="card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            Playbook
+            <div class="d-flex gap-1">
+                <button class="btn btn-sm btn-outline-primary" @onclick="SavePlaybook" disabled="@_running" title="Save to file">
+                    <i class="bi bi-download me-1"></i>Save
+                </button>
+                <button class="btn btn-sm btn-outline-primary" @onclick="LoadPlaybook" disabled="@_running" title="Load from file">
+                    <i class="bi bi-upload me-1"></i>Load
+                </button>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="ClearPlaybook" disabled="@_running" title="Clear all steps">
+                    <i class="bi bi-x-lg me-1"></i>Clear
+                </button>
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="row g-2 mb-2">
+                <div class="col-md-4">
+                    <label class="form-label small mb-0">Playbook Name</label>
+                    <input class="form-control form-control-sm" @bind="_playbook.Name" disabled="@_running" />
+                </div>
+                <div class="col-md-8">
+                    <label class="form-label small mb-0">Description</label>
+                    <input class="form-control form-control-sm" @bind="_playbook.Description" disabled="@_running"
+                           placeholder="Optional description..." />
+                </div>
+            </div>
+            @if (!string.IsNullOrEmpty(_playbookMessage))
+            {
+                <div class="alert @(_playbookMsgSuccess ? "alert-success" : "alert-danger") py-1 px-2 small mb-0">
+                    @_playbookMessage
+                </div>
+            }
+        </div>
+    </div>
+
+    @* ── STEPS LIST ── *@
+    @if (_playbook.Steps.Count > 0)
+    {
+        <div class="mb-3">
+            @for (int si = 0; si < _playbook.Steps.Count; si++)
+            {
+                var step = _playbook.Steps[si];
+                var idx = si;
+                var isCurrentStep = _running && _currentStepIndex == idx;
+                var isCompleted = (_running && idx < _currentStepIndex) || (!_running && _stepResults.Count > idx);
+
+                <div class="card mb-2 @(isCurrentStep ? "border-danger" : "")">
+                    <div class="card-body py-2 px-3">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div class="d-flex align-items-center gap-2">
+                                @if (isCurrentStep)
+                                {
+                                    <span class="badge bg-danger">Running</span>
+                                }
+                                else if (isCompleted && _stepResults.Count > idx)
+                                {
+                                    <span class="badge bg-success">Done</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-secondary">#@(idx + 1)</span>
+                                }
+                                <span class="badge bg-info text-dark">@FormatTestType(step.Type)</span>
+                                <span class="small fw-bold">@(string.IsNullOrEmpty(step.Label) ? $"Step {idx + 1}" : step.Label)</span>
+                                <span class="small text-muted">@FormatStepSummary(step)</span>
+                            </div>
+                            @if (!_running)
+                            {
+                                <div class="d-flex gap-1">
+                                    <button class="btn btn-sm btn-outline-secondary py-0 px-1" @onclick="() => MoveStepUp(idx)"
+                                            disabled="@(idx == 0)" title="Move up"><i class="bi bi-chevron-up"></i></button>
+                                    <button class="btn btn-sm btn-outline-secondary py-0 px-1" @onclick="() => MoveStepDown(idx)"
+                                            disabled="@(idx == _playbook.Steps.Count - 1)" title="Move down"><i class="bi bi-chevron-down"></i></button>
+                                    <button class="btn btn-sm btn-outline-primary py-0 px-1" @onclick="() => EditStep(idx)"
+                                            title="Edit"><i class="bi bi-pencil"></i></button>
+                                    <button class="btn btn-sm btn-outline-danger py-0 px-1" @onclick="() => RemoveStep(idx)"
+                                            title="Remove"><i class="bi bi-trash"></i></button>
+                                </div>
+                            }
+                        </div>
+                        @if (isCurrentStep && (_stats.Sent > 0 || _running))
+                        {
+                            <div class="row g-2 text-center mt-2 small">
+                                <div class="col">Sent: <span class="mono">@_stats.Sent</span></div>
+                                <div class="col">Success: <span class="mono text-success">@_stats.Success</span></div>
+                                <div class="col">Failed: <span class="mono text-danger">@_stats.Failed</span></div>
+                                <div class="col">Rate: <span class="mono">@FormatStatsRate(_stats) /s</span></div>
+                                <div class="col">Elapsed: <span class="mono">@FormatElapsed(_stats.Elapsed)</span></div>
+                            </div>
+                            <div class="progress mt-1" style="height: 4px;">
+                                <div class="progress-bar bg-danger" style="width: @(step.Count > 0 ? (int)(100.0 * _stats.Sent / step.Count) : 0)%"></div>
+                            </div>
+                        }
+                        else if (_stepResults.Count > idx)
+                        {
+                            var sr = _stepResults[idx];
+                            <div class="small text-muted mt-1">
+                                Sent @sr.Sent | Success @sr.Success | Failed @sr.Failed |
+                                @FormatElapsed(sr.Elapsed) | @FormatStatsRate(sr) /s
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    }
+    else if (!_showStepEditor)
+    {
+        <div class="text-muted small mb-3">No steps defined. Add a step to build your playbook.</div>
+    }
+
+    @* ── STEP EDITOR ── *@
+    @if (_showStepEditor && !_running)
+    {
+        <div class="card mb-3 border-primary">
+            <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
+                <span>@(_editingStepIndex >= 0 ? $"Edit Step #{_editingStepIndex + 1}" : "Add Step")</span>
+                <button class="btn btn-sm btn-outline-secondary py-0 px-1" @onclick="CancelStepEdit">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+            <div class="card-body">
+                <div class="row g-2 mb-2">
+                    <div class="col-md-4">
+                        <label class="form-label small mb-0">Step Label</label>
+                        <input class="form-control form-control-sm" @bind="_editStep.Label" placeholder="Optional name..." />
+                    </div>
+                </div>
+
+                @ConfigPanel
+
+                <button class="btn btn-sm btn-primary mt-2" @onclick="SaveStep">
+                    <i class="bi bi-check-lg me-1"></i>@(_editingStepIndex >= 0 ? "Update Step" : "Add Step")
+                </button>
+            </div>
+        </div>
+    }
+
+    @* ── ADD / RUN CONTROLS ── *@
+    <div class="d-flex gap-2 mb-3">
+        @if (!_running)
+        {
+            if (!_showStepEditor)
+            {
+                <button class="btn btn-outline-primary" @onclick="AddNewStep">
+                    <i class="bi bi-plus-lg me-1"></i>Add Step
+                </button>
+            }
+            if (_playbook.Steps.Count > 0)
+            {
+                <button class="btn btn-danger" @onclick="RunPlaybook" disabled="@(_showStepEditor)">
+                    <i class="bi bi-play-fill me-1"></i>Run Playbook (@_playbook.Steps.Count steps)
+                </button>
+            }
+            if (_stepResults.Count > 0)
+            {
+                <button class="btn btn-outline-secondary" @onclick="ClearResults">Clear Results</button>
+            }
+        }
+        else
+        {
+            <button class="btn btn-warning" @onclick="StopTest">
+                <i class="bi bi-stop-fill me-1"></i>Stop Playbook
+            </button>
+            <span class="align-self-center small text-muted">
+                Step @(_currentStepIndex + 1) / @_playbook.Steps.Count
+            </span>
+        }
+    </div>
+
+    @* ── PLAYBOOK SUMMARY TABLE ── *@
+    @if (!_running && _stepResults.Count > 0)
+    {
+        var totals = AggregateTotals();
+        <div class="card mb-3">
+            <div class="card-header">Playbook Results</div>
+            <div class="card-body p-0">
+                <table class="table table-sm table-hover mb-0 small">
+                    <thead>
+                        <tr><th>#</th><th>Label</th><th>Type</th><th class="text-end">Sent</th><th class="text-end">Success</th><th class="text-end">Failed</th><th class="text-end">Rate</th><th class="text-end">Elapsed</th></tr>
+                    </thead>
+                    <tbody>
+                        @for (int ri = 0; ri < _stepResults.Count; ri++)
+                        {
+                            var sr = _stepResults[ri];
+                            var stp = ri < _playbook.Steps.Count ? _playbook.Steps[ri] : null;
+                            <tr>
+                                <td>@(ri + 1)</td>
+                                <td>@(stp != null && !string.IsNullOrEmpty(stp.Label) ? stp.Label : $"Step {ri + 1}")</td>
+                                <td><span class="badge bg-info text-dark">@(stp != null ? FormatTestType(stp.Type) : "?")</span></td>
+                                <td class="text-end mono">@sr.Sent</td>
+                                <td class="text-end mono text-success">@sr.Success</td>
+                                <td class="text-end mono text-danger">@sr.Failed</td>
+                                <td class="text-end mono">@FormatStatsRate(sr) /s</td>
+                                <td class="text-end mono">@FormatElapsed(sr.Elapsed)</td>
+                            </tr>
+                        }
+                        <tr class="fw-bold table-light">
+                            <td colspan="3">Total</td>
+                            <td class="text-end mono">@totals.Sent</td>
+                            <td class="text-end mono text-success">@totals.Success</td>
+                            <td class="text-end mono text-danger">@totals.Failed</td>
+                            <td class="text-end mono">@FormatStatsRate(totals) /s</td>
+                            <td class="text-end mono">@FormatElapsed(totals.Elapsed)</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+
+    @* Playbook error log *@
+    if (_errorLog.Count > 0)
+    {
+        <div class="card mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                Error Log <span class="badge bg-danger">@_errorLog.Count</span>
+            </div>
+            <div class="card-body p-0">
+                <div style="max-height:200px; overflow-y:auto">
+                    <table class="table table-sm table-hover mb-0 small">
+                        <thead><tr><th style="width:60px">#</th><th>Error</th></tr></thead>
+                        <tbody>
+                            @foreach (var (eidx2, emsg2) in _errorLog.TakeLast(50))
+                            {
+                                <tr><td class="mono">@eidx2</td><td class="text-danger">@emsg2</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+<input type="file" id="playbookFileInput" accept=".json" style="display:none" />
+
+@code {
+    // ── Enums & Models ──
+
+    private enum TestType { TransactionFlood, ScQueryFlood, MessageFlood, RawPacket }
+
+    private class TestStats
+    {
+        public int Sent;
+        public int Success;
+        public int Failed;
+        public TimeSpan Elapsed;
+        public long TotalResponseMs;
+    }
+
+    private class StressPlaybook
+    {
+        public string Name { get; set; } = "Untitled";
+        public string Description { get; set; } = "";
+        public List<PlaybookStep> Steps { get; set; } = [];
+    }
+
+    private class PlaybookStep
+    {
+        public string Label { get; set; } = "";
+        [JsonConverter(typeof(JsonStringEnumConverter))]
+        public TestType Type { get; set; }
+        public int Count { get; set; } = 100;
+        public int Concurrency { get; set; } = 5;
+        public int DelayMs { get; set; } = 0;
+        public string? TxSeeds { get; set; }
+        public string? TxDestination { get; set; }
+        public long? TxAmount { get; set; }
+        public int? TxTickOffset { get; set; }
+        public int? TxPerSeedPerTick { get; set; }
+        public bool? TxSameTick { get; set; }
+        public uint? ScContractIndex { get; set; }
+        public uint? ScInputType { get; set; }
+        public string? ScInputHex { get; set; }
+        public int? MsgType { get; set; }
+        public string? MsgPayloadHex { get; set; }
+        public int? RawType { get; set; }
+        public string? RawHex { get; set; }
+    }
+
+    // ── Mode ──
+    private string _mode = "quick";
+
+    // ── Working fields ──
+    private TestType _testType = TestType.ScQueryFlood;
+    private int _totalCount = 100;
+    private int _concurrency = 5;
+    private int _delayMs = 0;
+
+    private string _txSeeds = "";
+    private string _txDestination = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    private long _txAmount = 0;
+    private int _txTickOffset = 10;
+    private int _txPerSeedPerTick = 1;
+    private bool _txSameTick = true;
+
+    private uint _scContractIndex = 4;
+    private uint _scInputType = 1;
+    private string _scInputHex = "";
+
+    private int _msgType = QubicPacketTypes.RequestCurrentTickInfo;
+    private string _msgPayloadHex = "";
+
+    private int _rawType = 0;
+    private string _rawHex = "";
+
+    // ── Runtime ──
+    private bool _running;
+    private CancellationTokenSource? _cts;
+    private TestStats _stats = new();
+    private readonly List<(int Index, string Message)> _errorLog = [];
+    private Timer? _uiTimer;
+
+    // Pre-built TX flood work items (seed, sourceIdentity)
+    private (string Seed, QubicIdentity Source)[]? _txWorkItems;
+
+    // ── Playbook ──
+    private StressPlaybook _playbook = new();
+    private bool _showStepEditor;
+    private PlaybookStep _editStep = new();
+    private int _editingStepIndex = -1;
+    private int _currentStepIndex = -1;
+    private readonly List<TestStats> _stepResults = [];
+    private string? _playbookMessage;
+    private bool _playbookMsgSuccess;
+
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() },
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    // ── Shared config panel as RenderFragment ──
+    private RenderFragment ConfigPanel => __builder2 =>
+    {
+        __builder2.OpenElement(0, "div");
+        __builder2.AddAttribute(1, "class", "row g-2 mb-3");
+
+        // Test Type
+        __builder2.AddMarkupContent(2, @"<div class=""col-md-3""><label class=""form-label small mb-0"">Test Type</label>");
+        __builder2.OpenElement(3, "select");
+        __builder2.AddAttribute(4, "class", "form-select form-select-sm");
+        __builder2.AddAttribute(5, "disabled", _running);
+        __builder2.AddAttribute(6, "value", _testType.ToString());
+        __builder2.AddAttribute(7, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+        {
+            if (Enum.TryParse<TestType>(e.Value?.ToString(), out var v)) _testType = v;
+        }));
+        __builder2.AddMarkupContent(8, $@"<option value=""TransactionFlood"">Transaction Flood</option><option value=""ScQueryFlood"">SC Query Flood</option><option value=""MessageFlood"">Message Flood</option><option value=""RawPacket"">Raw Packet Injection</option>");
+        __builder2.CloseElement(); // select
+        __builder2.AddMarkupContent(9, "</div>");
+
+        // Count
+        __builder2.AddMarkupContent(10, @"<div class=""col-md-3""><label class=""form-label small mb-0"">Total Count</label>");
+        __builder2.OpenElement(11, "input");
+        __builder2.AddAttribute(12, "type", "number");
+        __builder2.AddAttribute(13, "class", "form-control form-control-sm");
+        __builder2.AddAttribute(14, "min", "1");
+        __builder2.AddAttribute(15, "disabled", _running);
+        __builder2.AddAttribute(16, "value", Microsoft.AspNetCore.Components.BindConverter.FormatValue(_totalCount));
+        __builder2.AddAttribute(17, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+        {
+            if (int.TryParse(e.Value?.ToString(), out var v)) _totalCount = v;
+        }));
+        __builder2.CloseElement();
+        __builder2.AddMarkupContent(18, "</div>");
+
+        // Concurrency
+        __builder2.AddMarkupContent(19, @"<div class=""col-md-3""><label class=""form-label small mb-0"">Concurrency</label>");
+        __builder2.OpenElement(20, "input");
+        __builder2.AddAttribute(21, "type", "number");
+        __builder2.AddAttribute(22, "class", "form-control form-control-sm");
+        __builder2.AddAttribute(23, "min", "1");
+        __builder2.AddAttribute(24, "max", "100");
+        __builder2.AddAttribute(25, "disabled", _running);
+        __builder2.AddAttribute(26, "value", Microsoft.AspNetCore.Components.BindConverter.FormatValue(_concurrency));
+        __builder2.AddAttribute(27, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+        {
+            if (int.TryParse(e.Value?.ToString(), out var v)) _concurrency = v;
+        }));
+        __builder2.CloseElement();
+        __builder2.AddMarkupContent(28, "</div>");
+
+        // Delay
+        __builder2.AddMarkupContent(29, @"<div class=""col-md-3""><label class=""form-label small mb-0"">Delay Between (ms)</label>");
+        __builder2.OpenElement(30, "input");
+        __builder2.AddAttribute(31, "type", "number");
+        __builder2.AddAttribute(32, "class", "form-control form-control-sm");
+        __builder2.AddAttribute(33, "min", "0");
+        __builder2.AddAttribute(34, "disabled", _running);
+        __builder2.AddAttribute(35, "value", Microsoft.AspNetCore.Components.BindConverter.FormatValue(_delayMs));
+        __builder2.AddAttribute(36, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+        {
+            if (int.TryParse(e.Value?.ToString(), out var v)) _delayMs = v;
+        }));
+        __builder2.CloseElement();
+        __builder2.AddMarkupContent(37, "</div>");
+
+        __builder2.CloseElement(); // row
+
+        // Type-specific options rendered via AddContent with sub-fragments
+        __builder2.AddContent(38, TypeOptionsPanel);
+    };
+
+    private RenderFragment TypeOptionsPanel => __builder3 =>
+    {
+        if (_testType == TestType.TransactionFlood)
+        {
+            __builder3.AddMarkupContent(0, @"<div class=""border rounded p-2 mb-2""><div class=""small fw-bold mb-1"">Transaction Flood Options</div>");
+
+            // Seeds textarea
+            __builder3.AddMarkupContent(1, @"<div class=""mb-2""><label class=""form-label small mb-0"">Seeds (one per line, 55 chars each)</label>");
+            __builder3.OpenElement(2, "textarea");
+            __builder3.AddAttribute(3, "class", "form-control form-control-sm mono");
+            __builder3.AddAttribute(4, "rows", "4");
+            __builder3.AddAttribute(5, "placeholder", "Enter one seed per line (55 lowercase chars each)...");
+            __builder3.AddAttribute(6, "disabled", _running);
+            __builder3.AddAttribute(7, "value", _txSeeds);
+            __builder3.AddAttribute(8, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e => _txSeeds = e.Value?.ToString() ?? ""));
+            __builder3.CloseElement();
+
+            var seedCount = ParseSeedLines(_txSeeds).Length;
+            __builder3.AddMarkupContent(9, $@"<div class=""small text-muted"">{seedCount} seed(s) entered</div></div>");
+
+            // Row: destination, amount, tick offset
+            __builder3.AddMarkupContent(10, @"<div class=""row g-2 mb-2""><div class=""col-md-6""><label class=""form-label small mb-0"">Destination Identity</label>");
+            __builder3.OpenElement(11, "input");
+            __builder3.AddAttribute(12, "class", "form-control form-control-sm mono");
+            __builder3.AddAttribute(13, "placeholder", "60-char identity");
+            __builder3.AddAttribute(14, "maxlength", "60");
+            __builder3.AddAttribute(15, "disabled", _running);
+            __builder3.AddAttribute(16, "value", _txDestination);
+            __builder3.AddAttribute(17, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e => _txDestination = e.Value?.ToString() ?? ""));
+            __builder3.CloseElement();
+            __builder3.AddMarkupContent(18, "</div>");
+
+            __builder3.AddMarkupContent(19, @"<div class=""col-md-3""><label class=""form-label small mb-0"">Amount (QU)</label>");
+            __builder3.OpenElement(20, "input");
+            __builder3.AddAttribute(21, "type", "number");
+            __builder3.AddAttribute(22, "class", "form-control form-control-sm");
+            __builder3.AddAttribute(23, "min", "0");
+            __builder3.AddAttribute(24, "disabled", _running);
+            __builder3.AddAttribute(25, "value", Microsoft.AspNetCore.Components.BindConverter.FormatValue(_txAmount));
+            __builder3.AddAttribute(26, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e => { if (long.TryParse(e.Value?.ToString(), out var v)) _txAmount = v; }));
+            __builder3.CloseElement();
+            __builder3.AddMarkupContent(27, "</div>");
+
+            __builder3.AddMarkupContent(28, @"<div class=""col-md-3""><label class=""form-label small mb-0"">Tick Offset</label>");
+            __builder3.OpenElement(29, "input");
+            __builder3.AddAttribute(30, "type", "number");
+            __builder3.AddAttribute(31, "class", "form-control form-control-sm");
+            __builder3.AddAttribute(32, "min", "1");
+            __builder3.AddAttribute(33, "disabled", _running);
+            __builder3.AddAttribute(34, "value", Microsoft.AspNetCore.Components.BindConverter.FormatValue(_txTickOffset));
+            __builder3.AddAttribute(35, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e => { if (int.TryParse(e.Value?.ToString(), out var v)) _txTickOffset = v; }));
+            __builder3.CloseElement();
+            __builder3.AddMarkupContent(36, "</div></div>");
+
+            // Row: TXs per seed, tick mode
+            __builder3.AddMarkupContent(37, @"<div class=""row g-2""><div class=""col-md-4""><label class=""form-label small mb-0"">TXs Per Seed</label>");
+            __builder3.OpenElement(38, "input");
+            __builder3.AddAttribute(39, "type", "number");
+            __builder3.AddAttribute(40, "class", "form-control form-control-sm");
+            __builder3.AddAttribute(41, "min", "1");
+            __builder3.AddAttribute(42, "disabled", _running);
+            __builder3.AddAttribute(43, "value", Microsoft.AspNetCore.Components.BindConverter.FormatValue(_txPerSeedPerTick));
+            __builder3.AddAttribute(44, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e => { if (int.TryParse(e.Value?.ToString(), out var v) && v >= 1) _txPerSeedPerTick = v; }));
+            __builder3.CloseElement();
+            __builder3.AddMarkupContent(45, "</div>");
+
+            __builder3.AddMarkupContent(46, @"<div class=""col-md-4""><label class=""form-label small mb-0"">Tick Mode</label>");
+            __builder3.OpenElement(47, "select");
+            __builder3.AddAttribute(48, "class", "form-select form-select-sm");
+            __builder3.AddAttribute(49, "disabled", _running);
+            __builder3.AddAttribute(50, "value", _txSameTick ? "same" : "spread");
+            __builder3.AddAttribute(51, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e => _txSameTick = e.Value?.ToString() == "same"));
+            __builder3.AddMarkupContent(52, @"<option value=""same"">Same Tick (burst)</option><option value=""spread"">Unique Ticks (spread)</option>");
+            __builder3.CloseElement();
+            __builder3.AddMarkupContent(53, "</div>");
+
+            var totalTxs = seedCount * _txPerSeedPerTick;
+            __builder3.AddMarkupContent(54, $@"<div class=""col-md-4 d-flex align-items-end""><div class=""small text-muted"">Total: {totalTxs} TXs ({seedCount} seeds × {_txPerSeedPerTick} each), shuffled randomly</div></div></div>");
+
+            __builder3.AddMarkupContent(55, "</div>");
+        }
+        else if (_testType == TestType.ScQueryFlood)
+        {
+            __builder3.AddMarkupContent(40, @"<div class=""border rounded p-2 mb-2""><div class=""small fw-bold mb-1"">SC Query Flood Options</div><div class=""row g-2""><div class=""col-md-3""><label class=""form-label small mb-0"">Contract Index</label>");
+            __builder3.OpenElement(41, "input");
+            __builder3.AddAttribute(42, "type", "number");
+            __builder3.AddAttribute(43, "class", "form-control form-control-sm");
+            __builder3.AddAttribute(44, "min", "1");
+            __builder3.AddAttribute(45, "disabled", _running);
+            __builder3.AddAttribute(46, "value", Microsoft.AspNetCore.Components.BindConverter.FormatValue(_scContractIndex));
+            __builder3.AddAttribute(47, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e => { if (uint.TryParse(e.Value?.ToString(), out var v)) _scContractIndex = v; }));
+            __builder3.CloseElement();
+            __builder3.AddMarkupContent(48, @"</div><div class=""col-md-3""><label class=""form-label small mb-0"">Input Type</label>");
+            __builder3.OpenElement(49, "input");
+            __builder3.AddAttribute(50, "type", "number");
+            __builder3.AddAttribute(51, "class", "form-control form-control-sm");
+            __builder3.AddAttribute(52, "min", "1");
+            __builder3.AddAttribute(53, "disabled", _running);
+            __builder3.AddAttribute(54, "value", Microsoft.AspNetCore.Components.BindConverter.FormatValue(_scInputType));
+            __builder3.AddAttribute(55, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e => { if (uint.TryParse(e.Value?.ToString(), out var v)) _scInputType = v; }));
+            __builder3.CloseElement();
+            __builder3.AddMarkupContent(56, @"</div><div class=""col-md-6""><label class=""form-label small mb-0"">Input Data (hex, optional)</label>");
+            __builder3.OpenElement(57, "input");
+            __builder3.AddAttribute(58, "class", "form-control form-control-sm mono");
+            __builder3.AddAttribute(59, "placeholder", "Input bytes in hex");
+            __builder3.AddAttribute(60, "disabled", _running);
+            __builder3.AddAttribute(61, "value", _scInputHex);
+            __builder3.AddAttribute(62, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e => _scInputHex = e.Value?.ToString() ?? ""));
+            __builder3.CloseElement();
+            __builder3.AddMarkupContent(63, "</div></div></div>");
+        }
+        else if (_testType == TestType.MessageFlood)
+        {
+            __builder3.AddMarkupContent(70, @"<div class=""border rounded p-2 mb-2""><div class=""small fw-bold mb-1"">Message Flood Options</div><div class=""row g-2""><div class=""col-md-6""><label class=""form-label small mb-0"">Message Type</label>");
+            __builder3.OpenElement(71, "select");
+            __builder3.AddAttribute(72, "class", "form-select form-select-sm");
+            __builder3.AddAttribute(73, "disabled", _running);
+            __builder3.AddAttribute(74, "value", _msgType);
+            __builder3.AddAttribute(75, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e => { if (int.TryParse(e.Value?.ToString(), out var v)) _msgType = v; }));
+            __builder3.AddMarkupContent(76, $@"<option value=""{QubicPacketTypes.RequestCurrentTickInfo}"">RequestCurrentTickInfo ({QubicPacketTypes.RequestCurrentTickInfo})</option><option value=""{QubicPacketTypes.RequestEntity}"">RequestEntity ({QubicPacketTypes.RequestEntity})</option><option value=""{QubicPacketTypes.ExchangePublicPeers}"">ExchangePublicPeers ({QubicPacketTypes.ExchangePublicPeers})</option><option value=""{QubicPacketTypes.RequestComputors}"">RequestComputors ({QubicPacketTypes.RequestComputors})</option>");
+            __builder3.CloseElement();
+            __builder3.AddMarkupContent(77, @"</div><div class=""col-md-6""><label class=""form-label small mb-0"">Payload (hex, optional)</label>");
+            __builder3.OpenElement(78, "input");
+            __builder3.AddAttribute(79, "class", "form-control form-control-sm mono");
+            __builder3.AddAttribute(80, "placeholder", "Payload bytes in hex");
+            __builder3.AddAttribute(81, "disabled", _running);
+            __builder3.AddAttribute(82, "value", _msgPayloadHex);
+            __builder3.AddAttribute(83, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e => _msgPayloadHex = e.Value?.ToString() ?? ""));
+            __builder3.CloseElement();
+            __builder3.AddMarkupContent(84, "</div></div></div>");
+        }
+        else if (_testType == TestType.RawPacket)
+        {
+            __builder3.AddMarkupContent(90, @"<div class=""border rounded p-2 mb-2""><div class=""small fw-bold mb-1"">Raw Packet Options</div><div class=""row g-2""><div class=""col-md-3""><label class=""form-label small mb-0"">Packet Type</label>");
+            __builder3.OpenElement(91, "input");
+            __builder3.AddAttribute(92, "type", "number");
+            __builder3.AddAttribute(93, "class", "form-control form-control-sm");
+            __builder3.AddAttribute(94, "min", "0");
+            __builder3.AddAttribute(95, "max", "255");
+            __builder3.AddAttribute(96, "disabled", _running);
+            __builder3.AddAttribute(97, "value", Microsoft.AspNetCore.Components.BindConverter.FormatValue(_rawType));
+            __builder3.AddAttribute(98, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e => { if (int.TryParse(e.Value?.ToString(), out var v)) _rawType = v; }));
+            __builder3.CloseElement();
+            __builder3.AddMarkupContent(99, @"</div><div class=""col-md-9""><label class=""form-label small mb-0"">Payload (hex)</label>");
+            __builder3.OpenElement(100, "input");
+            __builder3.AddAttribute(101, "class", "form-control form-control-sm mono");
+            __builder3.AddAttribute(102, "placeholder", "Full payload bytes in hex");
+            __builder3.AddAttribute(103, "disabled", _running);
+            __builder3.AddAttribute(104, "value", _rawHex);
+            __builder3.AddAttribute(105, "onchange", Microsoft.AspNetCore.Components.EventCallback.Factory.Create<ChangeEventArgs>(this, e => _rawHex = e.Value?.ToString() ?? ""));
+            __builder3.CloseElement();
+            __builder3.AddMarkupContent(106, "</div></div></div>");
+        }
+    };
+
+    // ── Step editor helpers ──
+
+    private PlaybookStep CaptureFieldsToStep()
+    {
+        return new PlaybookStep
+        {
+            Label = _editStep.Label,
+            Type = _testType,
+            Count = _totalCount,
+            Concurrency = _concurrency,
+            DelayMs = _delayMs,
+            TxSeeds = _testType == TestType.TransactionFlood && !string.IsNullOrWhiteSpace(_txSeeds) ? _txSeeds : null,
+            TxDestination = _testType == TestType.TransactionFlood ? _txDestination : null,
+            TxAmount = _testType == TestType.TransactionFlood ? _txAmount : null,
+            TxTickOffset = _testType == TestType.TransactionFlood ? _txTickOffset : null,
+            TxPerSeedPerTick = _testType == TestType.TransactionFlood ? _txPerSeedPerTick : null,
+            TxSameTick = _testType == TestType.TransactionFlood ? _txSameTick : null,
+            ScContractIndex = _testType == TestType.ScQueryFlood ? _scContractIndex : null,
+            ScInputType = _testType == TestType.ScQueryFlood ? _scInputType : null,
+            ScInputHex = _testType == TestType.ScQueryFlood && !string.IsNullOrWhiteSpace(_scInputHex) ? _scInputHex : null,
+            MsgType = _testType == TestType.MessageFlood ? _msgType : null,
+            MsgPayloadHex = _testType == TestType.MessageFlood && !string.IsNullOrWhiteSpace(_msgPayloadHex) ? _msgPayloadHex : null,
+            RawType = _testType == TestType.RawPacket ? _rawType : null,
+            RawHex = _testType == TestType.RawPacket && !string.IsNullOrWhiteSpace(_rawHex) ? _rawHex : null,
+        };
+    }
+
+    private void LoadStepIntoFields(PlaybookStep step)
+    {
+        _testType = step.Type;
+        _totalCount = step.Count;
+        _concurrency = step.Concurrency;
+        _delayMs = step.DelayMs;
+        _txSeeds = step.TxSeeds ?? "";
+        _txDestination = step.TxDestination ?? "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        _txAmount = step.TxAmount ?? 0;
+        _txTickOffset = step.TxTickOffset ?? 10;
+        _txPerSeedPerTick = step.TxPerSeedPerTick ?? 1;
+        _txSameTick = step.TxSameTick ?? true;
+        _scContractIndex = step.ScContractIndex ?? 4;
+        _scInputType = step.ScInputType ?? 1;
+        _scInputHex = step.ScInputHex ?? "";
+        _msgType = step.MsgType ?? QubicPacketTypes.RequestCurrentTickInfo;
+        _msgPayloadHex = step.MsgPayloadHex ?? "";
+        _rawType = step.RawType ?? 0;
+        _rawHex = step.RawHex ?? "";
+    }
+
+    private void AddNewStep()
+    {
+        _editStep = new PlaybookStep { Type = _testType };
+        _editingStepIndex = -1;
+        _showStepEditor = true;
+    }
+
+    private void EditStep(int index)
+    {
+        var step = _playbook.Steps[index];
+        _editStep = JsonSerializer.Deserialize<PlaybookStep>(JsonSerializer.Serialize(step, JsonOpts), JsonOpts)!;
+        LoadStepIntoFields(_editStep);
+        _editingStepIndex = index;
+        _showStepEditor = true;
+    }
+
+    private void SaveStep()
+    {
+        var step = CaptureFieldsToStep();
+        if (_editingStepIndex >= 0 && _editingStepIndex < _playbook.Steps.Count)
+            _playbook.Steps[_editingStepIndex] = step;
+        else
+            _playbook.Steps.Add(step);
+        _showStepEditor = false;
+        _editingStepIndex = -1;
+    }
+
+    private void CancelStepEdit()
+    {
+        _showStepEditor = false;
+        _editingStepIndex = -1;
+    }
+
+    private void RemoveStep(int index) => _playbook.Steps.RemoveAt(index);
+
+    private void MoveStepUp(int index)
+    {
+        if (index <= 0) return;
+        (_playbook.Steps[index - 1], _playbook.Steps[index]) = (_playbook.Steps[index], _playbook.Steps[index - 1]);
+    }
+
+    private void MoveStepDown(int index)
+    {
+        if (index >= _playbook.Steps.Count - 1) return;
+        (_playbook.Steps[index], _playbook.Steps[index + 1]) = (_playbook.Steps[index + 1], _playbook.Steps[index]);
+    }
+
+    private void ClearPlaybook()
+    {
+        _playbook = new StressPlaybook();
+        _stepResults.Clear();
+        _errorLog.Clear();
+        _showStepEditor = false;
+        _playbookMessage = null;
+    }
+
+    private void ClearResults()
+    {
+        _stepResults.Clear();
+        _errorLog.Clear();
+    }
+
+    // ── Save / Load ──
+
+    private async Task SavePlaybook()
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(_playbook, JsonOpts);
+            var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+            var base64 = Convert.ToBase64String(bytes);
+            var safeName = string.Join("_", _playbook.Name.Split(Path.GetInvalidFileNameChars()));
+            var filename = $"playbook-{safeName}-{DateTime.Now:yyyyMMdd-HHmmss}.json";
+            await JS.InvokeVoidAsync("downloadFile", filename, "application/json", base64);
+            _playbookMessage = $"Saved \"{_playbook.Name}\" ({_playbook.Steps.Count} steps).";
+            _playbookMsgSuccess = true;
+        }
+        catch (Exception ex)
+        {
+            _playbookMessage = "Save failed: " + ex.Message;
+            _playbookMsgSuccess = false;
+        }
+    }
+
+    private async Task LoadPlaybook()
+    {
+        _playbookMessage = null;
+        try
+        {
+            var content = await JS.InvokeAsync<string?>("readFileAsText", "playbookFileInput");
+            if (content == null) return;
+            var loaded = JsonSerializer.Deserialize<StressPlaybook>(content, JsonOpts);
+            if (loaded == null)
+            {
+                _playbookMessage = "Invalid playbook file.";
+                _playbookMsgSuccess = false;
+                return;
+            }
+            _playbook = loaded;
+            _stepResults.Clear();
+            _errorLog.Clear();
+            _showStepEditor = false;
+            _playbookMessage = $"Loaded \"{_playbook.Name}\" with {_playbook.Steps.Count} step(s).";
+            _playbookMsgSuccess = true;
+        }
+        catch (JsonException ex)
+        {
+            _playbookMessage = "Invalid JSON: " + ex.Message;
+            _playbookMsgSuccess = false;
+        }
+        catch (Exception ex)
+        {
+            _playbookMessage = "Load failed: " + ex.Message;
+            _playbookMsgSuccess = false;
+        }
+    }
+
+    // ── Execution ──
+
+    private async Task StartQuickTest()
+    {
+        _stats = new TestStats();
+        _errorLog.Clear();
+        _running = true;
+        _cts = new CancellationTokenSource();
+        _uiTimer = new Timer(_ => InvokeAsync(StateHasChanged), null, 250, 250);
+
+        // For TX flood, build work items and set total count from seeds × perSeed
+        if (_testType == TestType.TransactionFlood)
+        {
+            _txWorkItems = BuildTxWorkItems();
+            _totalCount = _txWorkItems.Length;
+        }
+
+        try
+        {
+            await RunStepIterations(_totalCount, _concurrency, _delayMs, _cts.Token);
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            _running = false;
+            _txWorkItems = null;
+            _uiTimer?.Dispose();
+            _uiTimer = null;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RunPlaybook()
+    {
+        _stepResults.Clear();
+        _errorLog.Clear();
+        _running = true;
+        _cts = new CancellationTokenSource();
+        _uiTimer = new Timer(_ => InvokeAsync(StateHasChanged), null, 250, 250);
+        try
+        {
+            for (int i = 0; i < _playbook.Steps.Count; i++)
+            {
+                if (_cts.Token.IsCancellationRequested) break;
+                var step = _playbook.Steps[i];
+                _currentStepIndex = i;
+                _stats = new TestStats();
+                LoadStepIntoFields(step);
+
+                var count = step.Count;
+                if (step.Type == TestType.TransactionFlood)
+                {
+                    _txWorkItems = BuildTxWorkItems();
+                    count = _txWorkItems.Length;
+                }
+
+                await InvokeAsync(StateHasChanged);
+                await RunStepIterations(count, step.Concurrency, step.DelayMs, _cts.Token);
+                _txWorkItems = null;
+                _stepResults.Add(new TestStats
+                {
+                    Sent = _stats.Sent, Success = _stats.Success, Failed = _stats.Failed,
+                    Elapsed = _stats.Elapsed, TotalResponseMs = _stats.TotalResponseMs,
+                });
+            }
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            _currentStepIndex = -1;
+            _running = false;
+            _uiTimer?.Dispose();
+            _uiTimer = null;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RunStepIterations(int count, int concurrency, int delayMs, CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        var semaphore = new SemaphoreSlim(concurrency);
+        var tasks = new List<Task>();
+        for (int i = 0; i < count; i++)
+        {
+            if (ct.IsCancellationRequested) break;
+            await semaphore.WaitAsync(ct);
+            var index = i;
+            tasks.Add(Task.Run(async () =>
+            {
+                try
+                {
+                    var opSw = Stopwatch.StartNew();
+                    await ExecuteOne(index, ct);
+                    opSw.Stop();
+                    Interlocked.Add(ref _stats.TotalResponseMs, opSw.ElapsedMilliseconds);
+                    Interlocked.Increment(ref _stats.Success);
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    Interlocked.Increment(ref _stats.Failed);
+                    lock (_errorLog) { if (_errorLog.Count < 500) _errorLog.Add((index, ex.Message.Length > 120 ? ex.Message[..120] + "..." : ex.Message)); }
+                }
+                finally
+                {
+                    Interlocked.Increment(ref _stats.Sent);
+                    _stats.Elapsed = sw.Elapsed;
+                    semaphore.Release();
+                }
+                if (delayMs > 0) await Task.Delay(delayMs, ct).ConfigureAwait(false);
+            }, ct));
+        }
+        await Task.WhenAll(tasks);
+        sw.Stop();
+        _stats.Elapsed = sw.Elapsed;
+    }
+
+    private async Task ExecuteOne(int index, CancellationToken ct)
+    {
+        switch (_testType)
+        {
+            case TestType.TransactionFlood: await ExecuteTxFlood(index, ct); break;
+            case TestType.ScQueryFlood: await ExecuteScQuery(ct); break;
+            case TestType.MessageFlood: await ExecuteMessageFlood(ct); break;
+            case TestType.RawPacket: await ExecuteRawPacket(ct); break;
+        }
+    }
+
+    private async Task ExecuteTxFlood(int index, CancellationToken ct)
+    {
+        if (_txWorkItems == null || _txWorkItems.Length == 0) return;
+        var (seed, source) = _txWorkItems[index % _txWorkItems.Length];
+        var dest = QubicIdentity.FromIdentity(_txDestination.Trim());
+        var tick = _txSameTick
+            ? (uint)(TickMonitor.Tick + _txTickOffset)
+            : (uint)(TickMonitor.Tick + _txTickOffset + index);
+        var builder = new TransactionBuilder();
+        var tx = builder.CreateTransfer(source, dest, _txAmount, tick);
+        builder.Sign(tx, seed);
+        await Backend.BroadcastTransactionAsync(tx, ct);
+    }
+
+    private static string[] ParseSeedLines(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return [];
+        return text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                   .Where(s => s.Length == 55)
+                   .ToArray();
+    }
+
+    private (string Seed, QubicIdentity Source)[] BuildTxWorkItems()
+    {
+        var seeds = ParseSeedLines(_txSeeds);
+        if (seeds.Length == 0) return [];
+
+        // Build work items: each seed × txPerSeedPerTick, then shuffle
+        var items = new List<(string Seed, QubicIdentity Source)>();
+        foreach (var seed in seeds)
+        {
+            var identity = QubicIdentity.FromSeed(seed);
+            for (int j = 0; j < _txPerSeedPerTick; j++)
+                items.Add((seed, identity));
+        }
+
+        // Fisher-Yates shuffle for random distribution
+        var rng = Random.Shared;
+        for (int i = items.Count - 1; i > 0; i--)
+        {
+            int k = rng.Next(i + 1);
+            (items[i], items[k]) = (items[k], items[i]);
+        }
+
+        return items.ToArray();
+    }
+
+    private async Task ExecuteScQuery(CancellationToken ct)
+    {
+        var input = string.IsNullOrWhiteSpace(_scInputHex) ? Array.Empty<byte>() : Convert.FromHexString(_scInputHex.Trim());
+        await Backend.QuerySmartContractAsync(_scContractIndex, _scInputType, input, ct);
+    }
+
+    private async Task ExecuteMessageFlood(CancellationToken ct)
+    {
+        var payload = string.IsNullOrWhiteSpace(_msgPayloadHex) ? Array.Empty<byte>() : Convert.FromHexString(_msgPayloadHex.Trim());
+        await Backend.SendRawPacketAsync(BuildPacket((byte)_msgType, payload), ct);
+    }
+
+    private async Task ExecuteRawPacket(CancellationToken ct)
+    {
+        var payload = string.IsNullOrWhiteSpace(_rawHex) ? Array.Empty<byte>() : Convert.FromHexString(_rawHex.Trim());
+        await Backend.SendRawPacketAsync(BuildPacket((byte)_rawType, payload), ct);
+    }
+
+    private static byte[] BuildPacket(byte type, byte[] payload)
+    {
+        var header = QubicPacketHeader.Create(type, payload.Length, dejavu: 0);
+        var packet = new byte[QubicPacketHeader.Size + payload.Length];
+        uint sizeAndType = (uint)header.PacketSize | ((uint)header.Type << 24);
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(0), sizeAndType);
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(4), header.Dejavu);
+        if (payload.Length > 0) payload.CopyTo(packet.AsSpan(QubicPacketHeader.Size));
+        return packet;
+    }
+
+    private void StopTest() => _cts?.Cancel();
+
+    private void ResetStats() { _stats = new TestStats(); _errorLog.Clear(); }
+
+    // ── Formatting ──
+
+    private static string FormatElapsed(TimeSpan ts) =>
+        ts.TotalMinutes >= 1 ? $"{ts.Minutes}m {ts.Seconds}s" : $"{ts.TotalSeconds:F1}s";
+
+    private static string FormatStatsRate(TestStats s) =>
+        s.Elapsed.TotalSeconds < 0.01 ? "0" : (s.Sent / s.Elapsed.TotalSeconds).ToString("F1");
+
+    private static string FormatAvgResponse(TestStats s)
+    {
+        var count = s.Success + s.Failed;
+        return count == 0 ? "-" : $"{s.TotalResponseMs / count}ms";
+    }
+
+    private static string FormatTestType(TestType t) => t switch
+    {
+        TestType.TransactionFlood => "TX Flood",
+        TestType.ScQueryFlood => "SC Query",
+        TestType.MessageFlood => "Msg Flood",
+        TestType.RawPacket => "Raw Pkt",
+        _ => t.ToString()
+    };
+
+    private static string FormatStepSummary(PlaybookStep s)
+    {
+        var parts = new List<string> { $"{s.Count}\u00d7 @ {s.Concurrency} concurrent" };
+        switch (s.Type)
+        {
+            case TestType.TransactionFlood:
+                var sc = ParseSeedLines(s.TxSeeds ?? "").Length;
+                parts.Clear();
+                parts.Add($"{sc} seeds \u00d7 {s.TxPerSeedPerTick ?? 1}");
+                parts.Add(s.TxSameTick == true ? "same tick" : "unique ticks");
+                if (s.TxAmount > 0) parts.Add($"{s.TxAmount} QU");
+                break;
+            case TestType.ScQueryFlood: parts.Insert(0, $"Contract {s.ScContractIndex}, Type {s.ScInputType}"); break;
+            case TestType.MessageFlood: parts.Insert(0, $"MsgType {s.MsgType}"); break;
+            case TestType.RawPacket: parts.Insert(0, $"PktType {s.RawType}"); break;
+        }
+        if (s.DelayMs > 0) parts.Add($"{s.DelayMs}ms delay");
+        return string.Join(" \u2014 ", parts);
+    }
+
+    private TestStats AggregateTotals()
+    {
+        var t = new TestStats();
+        foreach (var sr in _stepResults)
+        {
+            t.Sent += sr.Sent; t.Success += sr.Success; t.Failed += sr.Failed;
+            t.Elapsed += sr.Elapsed; t.TotalResponseMs += sr.TotalResponseMs;
+        }
+        return t;
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _uiTimer?.Dispose();
+    }
+}

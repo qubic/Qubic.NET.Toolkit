@@ -168,6 +168,25 @@
             }
         }
 
+        @* ── TESTING ── *@
+        <div class="nav-section-header">
+            <a class="nav-section-label" href="/testing">TESTING</a>
+            <span class="nav-section-toggle" @onclick='() => Toggle("testing")'>
+                <i class="bi bi-chevron-right chevron @(IsExpanded("testing") ? "expanded" : "")"></i>
+            </span>
+        </div>
+        @if (IsExpanded("testing"))
+        {
+            <div class="nav-sub-links">
+                @NavItem("/testing/sc-tester", "bi-file-code", "SC Tester")
+                @if (IsDirectNetwork)
+                {
+                    @NavItem("/testing/arbitrator", "bi-shield-lock", "Arbitrator Tools")
+                    @NavItem("/testing/stress-test", "bi-lightning-charge", "Stress Test")
+                }
+            </div>
+        }
+
         <hr class="my-2" />
         <NavLink class="nav-link" href="/settings">
             <i class="bi bi-gear me-2"></i>Settings
@@ -222,6 +241,9 @@
         ["/tx/ipobid"] = ("IPO Bid", "bi-cash-stack"),
         ["/node/peers"] = ("Node Peers", "bi-diagram-3"),
         ["/node/management"] = ("Node Management", "bi-sliders"),
+        ["/testing/sc-tester"] = ("SC Tester", "bi-file-code"),
+        ["/testing/arbitrator"] = ("Arbitrator Tools", "bi-shield-lock"),
+        ["/testing/stress-test"] = ("Stress Test", "bi-lightning-charge"),
     };
 
     private static readonly Dictionary<string, string[]> SectionRoutes = new()
@@ -231,6 +253,7 @@
         ["explorer"] = ["/explorer", "/explorer/", "/wallet/balance", "/wallet/assets", "/tx/lookup", "/wallet/transfers", "/explorer/tick", "/explorer/computors", "/explorer/ipos", "/explorer/ipostatus", "/explorer/checktx", "/explorer/logs"],
         ["tools"] = ["/tools", "/tools/", "/wallet/identity", "/tx/import", "/tools/crypto", "/tools/oracle", "/tools/bob-playground"],
         ["computor"] = ["/node", "/node/", "/tx/governance", "/tx/ccf", "/node/peers", "/node/management"],
+        ["testing"] = ["/testing", "/testing/", "/testing/sc-tester", "/testing/arbitrator", "/testing/stress-test"],
     };
 
     protected override void OnInitialized()

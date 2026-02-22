@@ -152,6 +152,11 @@
                         @BackendRow("CCF", "/tx/ccf", true, false, false, icon: "bi-currency-exchange")
                         @BackendRow("Node Peers", "/node/peers", false, false, true, icon: "bi-diagram-3")
                         @BackendRow("Node Management", "/node/management", false, false, true, icon: "bi-sliders")
+
+                        <tr class="table-secondary"><td colspan="4"><strong>Testing</strong></td></tr>
+                        @BackendRow("SC Tester", "/testing/sc-tester", true, true, true, icon: "bi-file-code")
+                        @BackendRow("Arbitrator Tools", "/testing/arbitrator", false, false, true, icon: "bi-shield-lock")
+                        @BackendRow("Stress Test", "/testing/stress-test", false, false, true, icon: "bi-lightning-charge")
                     </tbody>
                 </table>
             </div>
