@@ -5,8 +5,8 @@
 @inject TransactionTrackerService TxTracker
 @inject QubicSettingsService Settings
 
-<h4>QVault (Admin)</h4>
-<p class="text-muted">Administrative operations for the QVault contract: manage addresses, distribution, and banning.</p>
+<h4>QVault (Staking &amp; Governance)</h4>
+<p class="text-muted">Stake QCAP, submit and vote on QVault proposals, buy QCAP.</p>
 
 @if (!Seed.HasSeed)
 {
@@ -26,111 +26,127 @@ else
     <div class="row"><div class="col-md-8">
         @switch (_activeTab)
         {
-            case "Auth":
-                <div class="card"><div class="card-header">Auth Address</div><div class="card-body">
+            case "Stake":
+                <div class="card"><div class="card-header">Stake / Unstake QCAP</div><div class="card-body">
                     <div class="mb-2">
                         <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="authMode" checked="@(!_authChange)" @onchange="() => _authChange = false" />
-                            <label class="form-check-label">Submit</label>
+                            <input class="form-check-input" type="radio" name="stakeMode" checked="@(_stakeAction == ActionStake)" @onchange="() => _stakeAction = ActionStake" />
+                            <label class="form-check-label">Stake</label>
                         </div>
                         <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="authMode" checked="@_authChange" @onchange="() => _authChange = true" />
-                            <label class="form-check-label">Change</label>
+                            <input class="form-check-input" type="radio" name="stakeMode" checked="@(_stakeAction == ActionUnstake)" @onchange="() => _stakeAction = ActionUnstake" />
+                            <label class="form-check-label">Unstake</label>
                         </div>
                     </div>
-                    @if (_authChange)
-                    {
-                        <div class="mb-2"><label class="form-label-sm">Number of Changed Address</label>
-                            <input type="number" class="form-control form-control-sm" min="0" @bind="_authChangedNum" /></div>
-                    }
-                    else
-                    {
-                        <div class="mb-2"><label class="form-label-sm">New Auth Address</label>
-                            <input class="form-control form-control-sm mono @IdentityValidation.CssClass(_authAddress)"
-                                   @bind="_authAddress" placeholder="IDENTITY..." /></div>
-                    }
-                    <button class="btn btn-primary" @onclick="AuthOp" disabled="@_sending">@(_sending ? "Sending..." : (_authChange ? "Change Auth Address" : "Submit Auth Address"))</button>
+                    <div class="mb-2"><label class="form-label-sm">Amount (QCAP)</label>
+                        <input type="number" class="form-control form-control-sm" min="1" @bind="_stakeAmount" /></div>
+                    <button class="btn btn-primary" @onclick="StakeOp" disabled="@_sending">@(_sending ? "Sending..." : (_stakeAction == ActionStake ? "Stake" : "Unstake"))</button>
                 </div></div>
                 break;
 
-            case "Distribution":
-                <div class="card"><div class="card-header">Distribution Permille</div><div class="card-body">
-                    <div class="mb-2">
-                        <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="distMode" checked="@(!_distChange)" @onchange="() => _distChange = false" />
-                            <label class="form-check-label">Submit</label>
-                        </div>
-                        <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="distMode" checked="@_distChange" @onchange="() => _distChange = true" />
-                            <label class="form-check-label">Change</label>
-                        </div>
-                    </div>
-                    <p class="small text-muted">Sum of QCAP Holder + Reinvesting + Dev must equal 970.</p>
-                    <div class="row g-2 mb-2">
-                        <div class="col"><label class="form-label-sm">QCAP Holder Permille</label>
-                            <input type="number" class="form-control form-control-sm" min="0" max="970" @bind="_distQcap" /></div>
-                        <div class="col"><label class="form-label-sm">Reinvesting Permille</label>
-                            <input type="number" class="form-control form-control-sm" min="0" max="970" @bind="_distReinvest" /></div>
-                        <div class="col"><label class="form-label-sm">Dev Permille</label>
-                            <input type="number" class="form-control form-control-sm" min="0" max="970" @bind="_distDev" /></div>
-                    </div>
-                    <div class="small text-muted mb-2">Sum: @(_distQcap + _distReinvest + _distDev)</div>
-                    <button class="btn btn-primary" @onclick="DistOp" disabled="@_sending">@(_sending ? "Sending..." : (_distChange ? "Change Distribution" : "Submit Distribution"))</button>
+            case "Buy QCAP":
+                <div class="card"><div class="card-header">Buy QCAP</div><div class="card-body">
+                    <div class="mb-2"><label class="form-label-sm">Amount (QCAP)</label>
+                        <input type="number" class="form-control form-control-sm" min="1" @bind="_buyAmount" /></div>
+                    <button class="btn btn-primary" @onclick="BuyQcap" disabled="@_sending">@(_sending ? "Sending..." : "Buy QCAP")</button>
                 </div></div>
                 break;
 
-            case "Reinvesting":
-                <div class="card"><div class="card-header">Reinvesting Address</div><div class="card-body">
+            case "Submit Proposal":
+                <div class="card"><div class="card-header">Submit Proposal</div><div class="card-body">
                     <div class="mb-2">
-                        <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="reinvMode" checked="@(!_reinvChange)" @onchange="() => _reinvChange = false" />
-                            <label class="form-check-label">Submit</label>
-                        </div>
-                        <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="reinvMode" checked="@_reinvChange" @onchange="() => _reinvChange = true" />
-                            <label class="form-check-label">Change</label>
-                        </div>
-                    </div>
-                    <div class="mb-2"><label class="form-label-sm">New Address</label>
-                        <input class="form-control form-control-sm mono @IdentityValidation.CssClass(_reinvAddress)"
-                               @bind="_reinvAddress" placeholder="IDENTITY..." /></div>
-                    <button class="btn btn-primary" @onclick="ReinvOp" disabled="@_sending">@(_sending ? "Sending..." : (_reinvChange ? "Change Reinvesting Address" : "Submit Reinvesting Address"))</button>
-                </div></div>
-                break;
-
-            case "Admin":
-                <div class="card"><div class="card-header">Admin Address</div><div class="card-body">
-                    <div class="mb-2">
-                        <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="adminMode" checked="@(!_adminChange)" @onchange="() => _adminChange = false" />
-                            <label class="form-check-label">Submit</label>
-                        </div>
-                        <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="adminMode" checked="@_adminChange" @onchange="() => _adminChange = true" />
-                            <label class="form-check-label">Change</label>
-                        </div>
-                    </div>
-                    <div class="mb-2"><label class="form-label-sm">New Admin Address</label>
-                        <input class="form-control form-control-sm mono @IdentityValidation.CssClass(_adminAddress)"
-                               @bind="_adminAddress" placeholder="IDENTITY..." /></div>
-                    <button class="btn btn-primary" @onclick="AdminOp" disabled="@_sending">@(_sending ? "Sending..." : (_adminChange ? "Change Admin Address" : "Submit Admin Address"))</button>
-                </div></div>
-                break;
-
-            case "Banning":
-                <div class="card"><div class="card-header">Address Banning</div><div class="card-body">
-                    <div class="mb-2">
-                        <select class="form-select form-select-sm" @bind="_banOp">
-                            <option value="submitBan">Submit Banned Address</option>
-                            <option value="saveBan">Save Banned Address</option>
-                            <option value="submitUnban">Submit Unbanned Address</option>
-                            <option value="unblock">Unblock Banned Address</option>
+                        <label class="form-label-sm">Proposal Type</label>
+                        <select class="form-select form-select-sm" @bind="_propType">
+                            <option value="GP">General Proposal (GP)</option>
+                            <option value="QCP">Quorum Change (QCP)</option>
+                            <option value="IPOP">IPO Proposal (IPOP)</option>
+                            <option value="QEarnP">QEarn Proposal (QEarnP)</option>
+                            <option value="FundP">Fund Proposal (FundP)</option>
+                            <option value="MKTP">Market Proposal (MKTP)</option>
+                            <option value="AlloP">Allocation Proposal (AlloP)</option>
                         </select>
                     </div>
-                    <div class="mb-2"><label class="form-label-sm">Address</label>
-                        <input class="form-control form-control-sm mono @IdentityValidation.CssClass(_banAddress)"
-                               @bind="_banAddress" placeholder="IDENTITY..." /></div>
-                    <button class="btn btn-primary" @onclick="BanOp" disabled="@_sending">@(_sending ? "Sending..." : "Submit")</button>
+                    <div class="mb-2"><label class="form-label-sm">URL (max 256 bytes)</label>
+                        <input class="form-control form-control-sm" maxlength="256" @bind="_propUrl" /></div>
+
+                    @switch (_propType)
+                    {
+                        case "QCP":
+                            <div class="mb-2"><label class="form-label-sm">New Quorum Percent</label>
+                                <input type="number" class="form-control form-control-sm" min="0" max="100" @bind="_qcpPercent" /></div>
+                            break;
+                        case "IPOP":
+                            <div class="mb-2"><label class="form-label-sm">IPO Contract Index</label>
+                                <input type="number" class="form-control form-control-sm" min="0" @bind="_ipoContractIndex" /></div>
+                            break;
+                        case "QEarnP":
+                            <div class="row g-2 mb-2">
+                                <div class="col"><label class="form-label-sm">Amount per Epoch</label>
+                                    <input type="number" class="form-control form-control-sm" min="0" @bind="_qearnAmountPerEpoch" /></div>
+                                <div class="col"><label class="form-label-sm">Number of Epochs</label>
+                                    <input type="number" class="form-control form-control-sm" min="0" @bind="_qearnEpochs" /></div>
+                            </div>
+                            break;
+                        case "FundP":
+                            <div class="row g-2 mb-2">
+                                <div class="col"><label class="form-label-sm">Price per QCAP</label>
+                                    <input type="number" class="form-control form-control-sm" min="0" @bind="_fundPrice" /></div>
+                                <div class="col"><label class="form-label-sm">Amount of QCAP</label>
+                                    <input type="number" class="form-control form-control-sm" min="0" @bind="_fundAmount" /></div>
+                            </div>
+                            break;
+                        case "MKTP":
+                            <div class="row g-2 mb-2">
+                                <div class="col"><label class="form-label-sm">Amount of Qubic</label>
+                                    <input type="number" class="form-control form-control-sm" min="0" @bind="_mktAmountQubic" /></div>
+                                <div class="col"><label class="form-label-sm">Share Name (u64)</label>
+                                    <input type="number" class="form-control form-control-sm" min="0" @bind="_mktShareName" /></div>
+                            </div>
+                            <div class="row g-2 mb-2">
+                                <div class="col"><label class="form-label-sm">Amount of QCAP</label>
+                                    <input type="number" class="form-control form-control-sm" min="0" @bind="_mktAmountQcap" /></div>
+                                <div class="col"><label class="form-label-sm">Index of Share</label>
+                                    <input type="number" class="form-control form-control-sm" min="0" @bind="_mktShareIndex" /></div>
+                                <div class="col"><label class="form-label-sm">Amount of Share</label>
+                                    <input type="number" class="form-control form-control-sm" min="0" @bind="_mktShareAmount" /></div>
+                            </div>
+                            break;
+                        case "AlloP":
+                            <p class="small text-muted">Reinvested + Burn + Distribute must total 970 permille.</p>
+                            <div class="row g-2 mb-2">
+                                <div class="col"><label class="form-label-sm">Reinvested</label>
+                                    <input type="number" class="form-control form-control-sm" min="0" max="970" @bind="_alloReinvest" /></div>
+                                <div class="col"><label class="form-label-sm">Burn</label>
+                                    <input type="number" class="form-control form-control-sm" min="0" max="970" @bind="_alloBurn" /></div>
+                                <div class="col"><label class="form-label-sm">Distribute</label>
+                                    <input type="number" class="form-control form-control-sm" min="0" max="970" @bind="_alloDistribute" /></div>
+                            </div>
+                            <div class="small text-muted mb-2">Sum: @(_alloReinvest + _alloBurn + _alloDistribute)</div>
+                            break;
+                    }
+                    <button class="btn btn-primary" @onclick="SubmitProposal" disabled="@_sending">@(_sending ? "Submitting..." : $"Submit {_propType}")</button>
+                </div></div>
+                break;
+
+            case "Vote":
+                <div class="card"><div class="card-header">Vote In Proposal</div><div class="card-body">
+                    <div class="row g-2 mb-2">
+                        <div class="col"><label class="form-label-sm">Proposal Type (u32)</label>
+                            <input type="number" class="form-control form-control-sm" min="0" @bind="_voteType" /></div>
+                        <div class="col"><label class="form-label-sm">Proposal ID</label>
+                            <input type="number" class="form-control form-control-sm" min="0" @bind="_voteProposalId" /></div>
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col"><label class="form-label-sm">Price of IPO (only for IPOP)</label>
+                            <input type="number" class="form-control form-control-sm" min="0" @bind="_votePriceOfIpo" /></div>
+                        <div class="col d-flex align-items-end">
+                            <div class="form-check">
+                                <input type="checkbox" class="form-check-input" @bind="_voteYes" />
+                                <label class="form-check-label">Yes</label>
+                            </div>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" @onclick="VoteOnProposal" disabled="@_sending">@(_sending ? "Sending..." : "Vote")</button>
                 </div></div>
                 break;
         }
@@ -150,23 +166,32 @@ else
 }
 
 @code {
-    private static readonly string[] _tabs = ["Auth", "Distribution", "Reinvesting", "Admin", "Banning"];
-    private string _activeTab = "Auth";
+    private const string ActionStake = "stake";
+    private const string ActionUnstake = "unstake";
+
+    private static readonly string[] _tabs = ["Stake", "Buy QCAP", "Submit Proposal", "Vote"];
+    private string _activeTab = "Stake";
     private bool _sending;
     private string? _result;
     private string? _error;
     private const int ContractIndex = 10;
 
-    // Auth
-    private bool _authChange; private string _authAddress = ""; private uint _authChangedNum;
-    // Distribution
-    private bool _distChange; private uint _distQcap; private uint _distReinvest; private uint _distDev;
-    // Reinvesting
-    private bool _reinvChange; private string _reinvAddress = "";
-    // Admin
-    private bool _adminChange; private string _adminAddress = "";
-    // Banning
-    private string _banOp = "submitBan"; private string _banAddress = "";
+    // Stake
+    private string _stakeAction = ActionStake; private uint _stakeAmount;
+    // Buy
+    private uint _buyAmount;
+    // Proposal
+    private string _propType = "GP";
+    private string _propUrl = "";
+    private uint _qcpPercent;
+    private uint _ipoContractIndex;
+    private ulong _qearnAmountPerEpoch; private uint _qearnEpochs;
+    private ulong _fundPrice; private uint _fundAmount;
+    private ulong _mktAmountQubic; private ulong _mktShareName;
+    private uint _mktAmountQcap; private uint _mktShareIndex; private uint _mktShareAmount;
+    private uint _alloReinvest; private uint _alloBurn; private uint _alloDistribute;
+    // Vote
+    private uint _voteType; private uint _voteProposalId; private ulong _votePriceOfIpo; private bool _voteYes;
 
     private async Task<uint> GetTick() => TickMonitor.IsConnected
         ? TickMonitor.Tick + (uint)Settings.TickOffset
@@ -183,125 +208,83 @@ else
             InputType = payload.InputType, PayloadHex = Convert.ToHexString(payload.GetPayloadBytes()), Description = desc });
     }
 
-    private byte[] ParseAddress(string addr)
-        => Qubic.Core.Entities.QubicIdentity.FromIdentity(addr.Trim()).PublicKey;
+    private static byte[] UrlBytes(string url)
+        => System.Text.Encoding.UTF8.GetBytes(url ?? "");
 
-    private async Task AuthOp()
+    private async Task StakeOp()
     {
         _sending = true; _error = null; _result = null;
         try
         {
+            if (_stakeAmount == 0) { _error = "Amount must be positive."; return; }
             var tick = await GetTick();
-            if (_authChange)
-            {
-                var payload = new Qubic.Core.Contracts.Qvault.ChangeAuthAddressPayload { NumberOfChangedAddress = _authChangedNum };
-                await Broadcast(0, tick, payload, $"QVault Change Auth Address #{_authChangedNum}");
-            }
-            else
-            {
-                var err = IdentityValidation.Validate(_authAddress);
-                if (err != null) { _error = err; return; }
-                var payload = new Qubic.Core.Contracts.Qvault.SubmitAuthAddressPayload { NewAddress = ParseAddress(_authAddress) };
-                await Broadcast(0, tick, payload, $"QVault Submit Auth Address");
-            }
+            Qubic.Core.Payloads.ITransactionPayload payload = _stakeAction == ActionStake
+                ? new Qubic.Core.Contracts.Qvault.StakePayload { Amount = _stakeAmount }
+                : new Qubic.Core.Contracts.Qvault.UnStakePayload { Amount = _stakeAmount };
+            await Broadcast(0, tick, payload, $"QVault {_stakeAction} {_stakeAmount:N0} QCAP");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
     }
 
-    private async Task DistOp()
+    private async Task BuyQcap()
     {
         _sending = true; _error = null; _result = null;
         try
         {
+            if (_buyAmount == 0) { _error = "Amount must be positive."; return; }
             var tick = await GetTick();
-            if (_distChange)
-            {
-                var payload = new Qubic.Core.Contracts.Qvault.ChangeDistributionPermillePayload
-                    { NewQCAPHolderPermille = _distQcap, NewReinvestingPermille = _distReinvest, NewDevPermille = _distDev };
-                await Broadcast(0, tick, payload, $"QVault Change Distribution: {_distQcap}/{_distReinvest}/{_distDev}");
-            }
-            else
-            {
-                var payload = new Qubic.Core.Contracts.Qvault.SubmitDistributionPermillePayload
-                    { NewQCAPHolderPermille = _distQcap, NewReinvestingPermille = _distReinvest, NewDevPermille = _distDev };
-                await Broadcast(0, tick, payload, $"QVault Submit Distribution: {_distQcap}/{_distReinvest}/{_distDev}");
-            }
+            var payload = new Qubic.Core.Contracts.Qvault.BuyQcapPayload { Amount = _buyAmount };
+            await Broadcast(0, tick, payload, $"QVault Buy {_buyAmount:N0} QCAP");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
     }
 
-    private async Task ReinvOp()
+    private async Task SubmitProposal()
     {
         _sending = true; _error = null; _result = null;
         try
         {
-            var err = IdentityValidation.Validate(_reinvAddress);
-            if (err != null) { _error = err; return; }
+            var url = UrlBytes(_propUrl);
             var tick = await GetTick();
-            if (_reinvChange)
+            Qubic.Core.Payloads.ITransactionPayload payload = _propType switch
             {
-                var payload = new Qubic.Core.Contracts.Qvault.ChangeReinvestingAddressPayload { NewAddress = ParseAddress(_reinvAddress) };
-                await Broadcast(0, tick, payload, "QVault Change Reinvesting Address");
-            }
-            else
-            {
-                var payload = new Qubic.Core.Contracts.Qvault.SubmitReinvestingAddressPayload { NewAddress = ParseAddress(_reinvAddress) };
-                await Broadcast(0, tick, payload, "QVault Submit Reinvesting Address");
-            }
+                "GP" => new Qubic.Core.Contracts.Qvault.SubmitGPPayload { Url = url },
+                "QCP" => new Qubic.Core.Contracts.Qvault.SubmitQCPPayload { NewQuorumPercent = _qcpPercent, Url = url },
+                "IPOP" => new Qubic.Core.Contracts.Qvault.SubmitIPOPPayload { IpoContractIndex = _ipoContractIndex, Url = url },
+                "QEarnP" => new Qubic.Core.Contracts.Qvault.SubmitQEarnPPayload { AmountPerEpoch = _qearnAmountPerEpoch, NumberOfEpoch = _qearnEpochs, Url = url },
+                "FundP" => new Qubic.Core.Contracts.Qvault.SubmitFundPPayload { PriceOfOneQcap = _fundPrice, AmountOfQcap = _fundAmount, Url = url },
+                "MKTP" => new Qubic.Core.Contracts.Qvault.SubmitMKTPPayload
+                {
+                    AmountOfQubic = _mktAmountQubic, ShareName = _mktShareName,
+                    AmountOfQcap = _mktAmountQcap, IndexOfShare = _mktShareIndex, AmountOfShare = _mktShareAmount,
+                    Url = url
+                },
+                "AlloP" => new Qubic.Core.Contracts.Qvault.SubmitAlloPPayload
+                    { Reinvested = _alloReinvest, Burn = _alloBurn, Distribute = _alloDistribute, Url = url },
+                _ => throw new ArgumentException($"Unknown proposal type {_propType}")
+            };
+            await Broadcast(0, tick, payload, $"QVault Submit {_propType} proposal");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
     }
 
-    private async Task AdminOp()
+    private async Task VoteOnProposal()
     {
         _sending = true; _error = null; _result = null;
         try
         {
-            var err = IdentityValidation.Validate(_adminAddress);
-            if (err != null) { _error = err; return; }
             var tick = await GetTick();
-            if (_adminChange)
+            var payload = new Qubic.Core.Contracts.Qvault.VoteInProposalPayload
             {
-                var payload = new Qubic.Core.Contracts.Qvault.ChangeAdminAddressPayload { NewAddress = ParseAddress(_adminAddress) };
-                await Broadcast(0, tick, payload, "QVault Change Admin Address");
-            }
-            else
-            {
-                var payload = new Qubic.Core.Contracts.Qvault.SubmitAdminAddressPayload { NewAddress = ParseAddress(_adminAddress) };
-                await Broadcast(0, tick, payload, "QVault Submit Admin Address");
-            }
-        }
-        catch (Exception ex) { _error = ex.Message; }
-        finally { _sending = false; }
-    }
-
-    private async Task BanOp()
-    {
-        _sending = true; _error = null; _result = null;
-        try
-        {
-            var err = IdentityValidation.Validate(_banAddress);
-            if (err != null) { _error = err; return; }
-            var tick = await GetTick();
-            var pk = ParseAddress(_banAddress);
-            switch (_banOp)
-            {
-                case "submitBan":
-                    await Broadcast(0, tick, new Qubic.Core.Contracts.Qvault.SubmitBannedAddressPayload { BannedAddress = pk }, "QVault Submit Banned Address");
-                    break;
-                case "saveBan":
-                    await Broadcast(0, tick, new Qubic.Core.Contracts.Qvault.SaveBannedAddressPayload { BannedAddress = pk }, "QVault Save Banned Address");
-                    break;
-                case "submitUnban":
-                    await Broadcast(0, tick, new Qubic.Core.Contracts.Qvault.SubmitUnbannedAddressPayload { UnbannedAddress = pk }, "QVault Submit Unbanned Address");
-                    break;
-                case "unblock":
-                    await Broadcast(0, tick, new Qubic.Core.Contracts.Qvault.UnblockBannedAddressPayload { UnbannedAddress = pk }, "QVault Unblock Banned Address");
-                    break;
-            }
+                PriceOfIPO = _votePriceOfIpo,
+                ProposalType = _voteType,
+                ProposalId = _voteProposalId,
+                Yes = _voteYes
+            };
+            await Broadcast(0, tick, payload, $"QVault Vote on proposal {_voteProposalId} (type {_voteType}): {(_voteYes ? "YES" : "NO")}");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }

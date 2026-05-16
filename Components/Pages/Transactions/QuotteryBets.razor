@@ -5,17 +5,17 @@
 @inject TransactionTrackerService TxTracker
 @inject QubicSettingsService Settings
 
-<h4>Quottery (Betting)</h4>
-<p class="text-muted">Issue bets, join bets, publish results, or cancel bets on the Quottery contract.</p>
+<h4>Quottery (Order-Book Betting)</h4>
+<p class="text-muted">Create events, place / cancel orders, publish results, dispute, claim rewards, or transfer QUSD/QTRYGOV.</p>
 
 @if (_basicInfo != null)
 {
     <div class="small text-muted mb-2">
-        Fees &mdash; Per Slot/Hour: <strong>@_basicInfo.Value.feePerSlotPerHour.ToString("N0")</strong> |
-        Operator: <strong>@_basicInfo.Value.operatorFee.ToString("N0")</strong> |
-        Shareholder: <strong>@_basicInfo.Value.shareholderFee.ToString("N0")</strong> |
-        Min Bet Slot: <strong>@_basicInfo.Value.minBetSlot.ToString("N0")</strong> |
-        Burn: <strong>@_basicInfo.Value.burnFee.ToString("N0")</strong>
+        Operation Fee: <strong>@_basicInfo.Value.opFee.ToString("N0")</strong> |
+        Shareholder: <strong>@_basicInfo.Value.shFee.ToString("N0")</strong> |
+        Burn: <strong>@_basicInfo.Value.burnFee.ToString("N0")</strong> |
+        Events Issued: <strong>@_basicInfo.Value.nEvents.ToString("N0")</strong> |
+        Dispute Deposit: <strong>@_basicInfo.Value.disputeDeposit.ToString("N0")</strong>
     </div>
 }
 
@@ -37,74 +37,203 @@ else
     <div class="row"><div class="col-md-8">
         @switch (_activeTab)
         {
-            case "Join Bet":
-                <div class="card"><div class="card-header">Join Bet</div><div class="card-body">
-                    <div class="mb-2"><label class="form-label-sm">Bet ID</label>
-                        <input type="number" class="form-control form-control-sm" min="0" @bind="_joinBetId" /></div>
-                    <div class="mb-2"><label class="form-label-sm">Number of Slots</label>
-                        <input type="number" class="form-control form-control-sm" min="1" @bind="_joinSlots" /></div>
-                    <div class="mb-2"><label class="form-label-sm">Amount per Slot (QU)</label>
-                        <input type="number" class="form-control form-control-sm" min="1" @bind="_joinAmountPerSlot" /></div>
-                    <div class="mb-2"><label class="form-label-sm">Picked Option</label>
-                        <input type="number" class="form-control form-control-sm" min="0" @bind="_joinOption" /></div>
-                    @if (_joinSlots > 0 && _joinAmountPerSlot > 0)
-                    {
-                        <div class="small text-muted mb-2">Total: @((_joinSlots * _joinAmountPerSlot).ToString("N0")) QU</div>
-                    }
-                    <button class="btn btn-primary" @onclick="JoinBet" disabled="@_sending">@(_sending ? "Joining..." : "Join Bet")</button>
+            case "Create Event":
+                <div class="card"><div class="card-header">Create Event (binary outcome)</div><div class="card-body">
+                    <p class="small text-muted">
+                        Submits a 280-byte <code>CreateEvent</code> payload. Quottery v2 events are binary —
+                        exactly two options. UTF-8 strings are packed into fixed byte slots and truncated if too long.
+                    </p>
+                    <div class="alert alert-info small py-2 mb-2">
+                        The contract assigns the event ID itself (from a monotonic counter) and overrides
+                        <code>openDate</code> with the chain's current time, so those aren't user-controlled.
+                        After your transaction confirms, use <strong>Browse Active Events</strong> to find your new
+                        event ID.
+                    </div>
+                    <div class="mb-2"><label class="form-label-sm">End Date (UTC) — bit-packed as Qubic <code>DateAndTime</code></label>
+                        <input type="datetime-local" class="form-control form-control-sm" @bind="_ceEndDate" /></div>
+                    <div class="mb-2"><label class="form-label-sm">Description (max 128 chars)</label>
+                        <input class="form-control form-control-sm" maxlength="128" @bind="_ceDesc" /></div>
+                    <div class="row g-2 mb-2">
+                        <div class="col"><label class="form-label-sm">Option 0 Label (max 64 chars)</label>
+                            <input class="form-control form-control-sm" maxlength="64" @bind="_ceOption0" /></div>
+                        <div class="col"><label class="form-label-sm">Option 1 Label (max 64 chars)</label>
+                            <input class="form-control form-control-sm" maxlength="64" @bind="_ceOption1" /></div>
+                    </div>
+                    <button class="btn btn-primary" @onclick="CreateEvent" disabled="@_sending">@(_sending ? "Sending..." : "Create Event")</button>
                 </div></div>
                 break;
 
-            case "Cancel Bet":
-                <div class="card"><div class="card-header">Cancel Bet</div><div class="card-body">
-                    <p class="small text-muted">Only the game operator can cancel a bet.</p>
-                    <div class="mb-2"><label class="form-label-sm">Bet ID</label>
-                        <input type="number" class="form-control form-control-sm" min="0" @bind="_cancelBetId" /></div>
-                    <button class="btn btn-warning" @onclick="CancelBet" disabled="@_sending">@(_sending ? "Cancelling..." : "Cancel Bet")</button>
+            case "Browse Active Events":
+                <div class="card"><div class="card-header">Browse Active Events</div><div class="card-body">
+                    <p class="small text-muted">
+                        Calls <code>GetActiveEvent</code> and lists each currently-active event with its description,
+                        option labels, and end date. Click an event ID to copy it into the other tabs.
+                    </p>
+                    <button class="btn btn-sm btn-outline-primary mb-2" @onclick="LoadActiveEvents" disabled="@_loadingEvents">
+                        @(_loadingEvents ? "Loading..." : "Refresh")
+                    </button>
+                    @if (_eventsError != null) { <div class="alert alert-warning small py-1 mb-2">@_eventsError</div> }
+                    @if (_activeEvents == null)
+                    {
+                        <div class="text-muted small">Click Refresh to load.</div>
+                    }
+                    else if (_activeEvents.Count == 0)
+                    {
+                        <div class="text-muted small">No active events.</div>
+                    }
+                    else
+                    {
+                        <div class="small">
+                            <div class="text-muted mb-2">@_activeEvents.Count active event(s).</div>
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Description</th>
+                                        <th>Option 0</th>
+                                        <th>Option 1</th>
+                                        <th>End Date (UTC)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var ev in _activeEvents)
+                                    {
+                                        <tr>
+                                            <td>
+                                                <a href="" @onclick="() => UseEventId(ev.Id)" @onclick:preventDefault
+                                                   class="text-primary text-decoration-none">@ev.Id</a>
+                                            </td>
+                                            <td>@ev.Desc</td>
+                                            <td>@ev.Opt0</td>
+                                            <td>@ev.Opt1</td>
+                                            <td>@ev.EndDate</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                            <div class="text-muted">Tip: <code>nIssuedEvent</code> in the header above is the next ID
+                                the contract will assign — i.e. your event was <code>nIssuedEvent - 1</code> right after
+                                its transaction confirmed.</div>
+                        </div>
+                    }
+                </div></div>
+                break;
+
+            case "Place Order":
+                <div class="card"><div class="card-header">Add To Ask / Bid Order</div><div class="card-body">
+                    <div class="mb-2">
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="orderSide" checked="@(_orderSide == SideAsk)" @onchange="() => _orderSide = SideAsk" />
+                            <label class="form-check-label">Ask (sell)</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="orderSide" checked="@(_orderSide == SideBid)" @onchange="() => _orderSide = SideBid" />
+                            <label class="form-check-label">Bid (buy)</label>
+                        </div>
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col"><label class="form-label-sm">Event ID</label>
+                            <input type="number" class="form-control form-control-sm" min="0" @bind="_eventId" /></div>
+                        <div class="col"><label class="form-label-sm">Option</label>
+                            <input type="number" class="form-control form-control-sm" min="0" @bind="_option" /></div>
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col"><label class="form-label-sm">Amount</label>
+                            <input type="number" class="form-control form-control-sm" min="1" @bind="_amount" /></div>
+                        <div class="col"><label class="form-label-sm">Price</label>
+                            <input type="number" class="form-control form-control-sm" @bind="_price" /></div>
+                    </div>
+                    <button class="btn btn-primary" @onclick="PlaceOrder" disabled="@_sending">@(_sending ? "Sending..." : $"Add To {(_orderSide == SideAsk ? "Ask" : "Bid")} Order")</button>
+                </div></div>
+                break;
+
+            case "Remove Order":
+                <div class="card"><div class="card-header">Remove Ask / Bid Order</div><div class="card-body">
+                    <div class="mb-2">
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="removeSide" checked="@(_orderSide == SideAsk)" @onchange="() => _orderSide = SideAsk" />
+                            <label class="form-check-label">Ask</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio" name="removeSide" checked="@(_orderSide == SideBid)" @onchange="() => _orderSide = SideBid" />
+                            <label class="form-check-label">Bid</label>
+                        </div>
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col"><label class="form-label-sm">Event ID</label>
+                            <input type="number" class="form-control form-control-sm" min="0" @bind="_eventId" /></div>
+                        <div class="col"><label class="form-label-sm">Option</label>
+                            <input type="number" class="form-control form-control-sm" min="0" @bind="_option" /></div>
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col"><label class="form-label-sm">Amount</label>
+                            <input type="number" class="form-control form-control-sm" min="1" @bind="_amount" /></div>
+                        <div class="col"><label class="form-label-sm">Price</label>
+                            <input type="number" class="form-control form-control-sm" @bind="_price" /></div>
+                    </div>
+                    <button class="btn btn-warning" @onclick="RemoveOrder" disabled="@_sending">@(_sending ? "Sending..." : $"Remove {(_orderSide == SideAsk ? "Ask" : "Bid")} Order")</button>
                 </div></div>
                 break;
 
             case "Publish Result":
                 <div class="card"><div class="card-header">Publish Result</div><div class="card-body">
-                    <p class="small text-muted">Oracle providers only: publish the winning option for a bet.</p>
-                    <div class="mb-2"><label class="form-label-sm">Bet ID</label>
-                        <input type="number" class="form-control form-control-sm" min="0" @bind="_pubBetId" /></div>
-                    <div class="mb-2"><label class="form-label-sm">Winning Option</label>
-                        <input type="number" class="form-control form-control-sm" min="0" @bind="_pubWinOption" /></div>
-                    <button class="btn btn-primary" @onclick="PublishResult" disabled="@_sending">@(_sending ? "Publishing..." : "Publish Result")</button>
+                    <p class="small text-muted">Oracle providers only.</p>
+                    <div class="row g-2 mb-2">
+                        <div class="col"><label class="form-label-sm">Event ID</label>
+                            <input type="number" class="form-control form-control-sm" min="0" @bind="_eventId" /></div>
+                        <div class="col"><label class="form-label-sm">Winning Option</label>
+                            <input type="number" class="form-control form-control-sm" min="0" @bind="_option" /></div>
+                    </div>
+                    <button class="btn btn-primary" @onclick="PublishResult" disabled="@_sending">@(_sending ? "Sending..." : "Publish Result")</button>
                 </div></div>
                 break;
 
-            case "Issue Bet":
-                <div class="card"><div class="card-header">Issue Bet</div><div class="card-body">
-                    <p class="small text-muted">Create a new bet with up to 8 options and oracle providers.</p>
-                    <div class="mb-2"><label class="form-label-sm">Bet Description (max 32 chars)</label>
-                        <input class="form-control form-control-sm" maxlength="32" @bind="_issueBetDesc" /></div>
-                    <div class="mb-2"><label class="form-label-sm">Number of Options (1-8)</label>
-                        <input type="number" class="form-control form-control-sm" min="1" max="8" @bind="_issueNumOptions" /></div>
-                    @for (int i = 0; i < Math.Min(_issueNumOptions, 8); i++)
-                    {
-                        var idx = i;
-                        <div class="mb-1"><label class="form-label-sm">Option @(idx + 1) Description (max 32 chars)</label>
-                            <input class="form-control form-control-sm" maxlength="32" @bind="_issueOptionDescs[idx]" /></div>
-                    }
-                    <div class="mb-2"><label class="form-label-sm">Oracle Provider Identities (one per line, up to 8)</label>
-                        <textarea class="form-control form-control-sm mono" rows="3" @bind="_issueOracleText" placeholder="IDENTITY1&#10;IDENTITY2"></textarea></div>
-                    <div class="mb-2"><label class="form-label-sm">Oracle Fee per Provider (comma-separated)</label>
-                        <input class="form-control form-control-sm" @bind="_issueOracleFeesText" placeholder="100,100" /></div>
+            case "Finalize":
+                <div class="card"><div class="card-header">Try Finalize Event</div><div class="card-body">
+                    <div class="mb-2"><label class="form-label-sm">Event ID</label>
+                        <input type="number" class="form-control form-control-sm" min="0" @bind="_eventId" /></div>
+                    <button class="btn btn-primary" @onclick="TryFinalize" disabled="@_sending">@(_sending ? "Sending..." : "Try Finalize")</button>
+                </div></div>
+                break;
+
+            case "Dispute":
+                <div class="card"><div class="card-header">Open / Resolve Dispute</div><div class="card-body">
+                    <p class="small text-muted">Opening a dispute requires the configured deposit. Resolving casts a vote.</p>
                     <div class="row g-2 mb-2">
-                        <div class="col"><label class="form-label-sm">Close Date (epoch secs)</label>
-                            <input type="number" class="form-control form-control-sm" @bind="_issueCloseDate" /></div>
-                        <div class="col"><label class="form-label-sm">End Date (epoch secs)</label>
-                            <input type="number" class="form-control form-control-sm" @bind="_issueEndDate" /></div>
+                        <div class="col"><label class="form-label-sm">Event ID</label>
+                            <input type="number" class="form-control form-control-sm" min="0" @bind="_eventId" /></div>
+                        <div class="col"><label class="form-label-sm">Resolve Vote (option index, -1 to skip)</label>
+                            <input type="number" class="form-control form-control-sm" @bind="_disputeVote" /></div>
                     </div>
-                    <div class="row g-2 mb-2">
-                        <div class="col"><label class="form-label-sm">Amount per Slot (QU)</label>
-                            <input type="number" class="form-control form-control-sm" @bind="_issueAmountPerSlot" /></div>
-                        <div class="col"><label class="form-label-sm">Max Slots per Option</label>
-                            <input type="number" class="form-control form-control-sm" @bind="_issueMaxSlots" /></div>
+                    <div class="mb-2"><label class="form-label-sm">Deposit Amount (open dispute, QU)</label>
+                        <input type="number" class="form-control form-control-sm" min="0" @bind="_disputeDeposit" /></div>
+                    <button class="btn btn-warning me-2" @onclick="OpenDispute" disabled="@_sending">@(_sending ? "Sending..." : "Open Dispute")</button>
+                    <button class="btn btn-primary" @onclick="ResolveDispute" disabled="@_sending">@(_sending ? "Sending..." : "Resolve Dispute")</button>
+                </div></div>
+                break;
+
+            case "Claim Reward":
+                <div class="card"><div class="card-header">User Claim Reward</div><div class="card-body">
+                    <div class="mb-2"><label class="form-label-sm">Event ID</label>
+                        <input type="number" class="form-control form-control-sm" min="0" @bind="_eventId" /></div>
+                    <button class="btn btn-primary" @onclick="ClaimReward" disabled="@_sending">@(_sending ? "Claiming..." : "Claim Reward")</button>
+                </div></div>
+                break;
+
+            case "Transfer QUSD/QTRYGOV":
+                <div class="card"><div class="card-header">Transfer QUSD / QTRYGOV</div><div class="card-body">
+                    <div class="mb-2">
+                        <select class="form-select form-select-sm" @bind="_transferToken">
+                            <option value="qusd">QUSD</option>
+                            <option value="qtrygov">QTRYGOV</option>
+                        </select>
                     </div>
-                    <button class="btn btn-primary" @onclick="IssueBet" disabled="@_sending">@(_sending ? "Issuing..." : "Issue Bet")</button>
+                    <div class="mb-2"><label class="form-label-sm">Receiver Identity</label>
+                        <input class="form-control form-control-sm mono @IdentityValidation.CssClass(_transferReceiver)"
+                               @bind="_transferReceiver" placeholder="IDENTITY..." /></div>
+                    <div class="mb-2"><label class="form-label-sm">Amount</label>
+                        <input type="number" class="form-control form-control-sm" min="1" @bind="_transferAmount" /></div>
+                    <button class="btn btn-primary" @onclick="TransferToken" disabled="@_sending">@(_sending ? "Sending..." : $"Transfer {_transferToken.ToUpperInvariant()}")</button>
                 </div></div>
                 break;
         }
@@ -124,38 +253,74 @@ else
 }
 
 @code {
-    private static readonly string[] _tabs = ["Join Bet", "Cancel Bet", "Publish Result", "Issue Bet"];
-    private string _activeTab = "Join Bet";
+    private const string SideAsk = "ask";
+    private const string SideBid = "bid";
+
+    private static readonly string[] _tabs =
+        ["Browse Active Events", "Create Event", "Place Order", "Remove Order", "Publish Result", "Finalize", "Dispute", "Claim Reward", "Transfer QUSD/QTRYGOV"];
+    private string _activeTab = "Browse Active Events";
+
+    // Create Event (Eid and openDate are contract-assigned, not user-supplied)
+    private DateTime _ceEndDate = DateTime.UtcNow.AddDays(7);
+    private string _ceDesc = "";
+    private string _ceOption0 = "";
+    private string _ceOption1 = "";
+
+    // Active events browser
+    private bool _loadingEvents;
+    private string? _eventsError;
+    private List<ActiveEventRow>? _activeEvents;
+    private record ActiveEventRow(ulong Id, string Desc, string Opt0, string Opt1, string EndDate);
+
+    // Packs a DateTime (treated as UTC) into the Qubic DateAndTime u64 layout
+    // from qpi.h:244 — bit positions: year<<46, month<<42, day<<37, hour<<32,
+    // minute<<26, second<<20, millisec<<10, microsec.
+    private static ulong PackDateAndTime(DateTime dt)
+    {
+        var u = dt.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(dt, DateTimeKind.Utc) : dt.ToUniversalTime();
+        return ((ulong)u.Year << 46)
+             | ((ulong)u.Month << 42)
+             | ((ulong)u.Day << 37)
+             | ((ulong)u.Hour << 32)
+             | ((ulong)u.Minute << 26)
+             | ((ulong)u.Second << 20);
+    }
     private bool _sending;
     private string? _result;
     private string? _error;
     private const int ContractIndex = 2;
-    private (ulong feePerSlotPerHour, ulong operatorFee, ulong shareholderFee, ulong minBetSlot, ulong burnFee)? _basicInfo;
+    private (ulong opFee, ulong shFee, ulong burnFee, ulong nEvents, ulong disputeDeposit)? _basicInfo;
 
-    // Join
-    private uint _joinBetId; private uint _joinSlots = 1; private long _joinAmountPerSlot; private uint _joinOption;
-    // Cancel
-    private uint _cancelBetId;
-    // Publish
-    private uint _pubBetId; private uint _pubWinOption;
-    // Issue
-    private string _issueBetDesc = "";
-    private int _issueNumOptions = 2;
-    private readonly string[] _issueOptionDescs = new string[8];
-    private string _issueOracleText = "";
-    private string _issueOracleFeesText = "";
-    private uint _issueCloseDate; private uint _issueEndDate;
-    private long _issueAmountPerSlot; private uint _issueMaxSlots;
+    // Shared order/event state
+    private string _orderSide = SideAsk;
+    private long _eventId;
+    private long _option;
+    private long _amount = 1;
+    private long _price;
+
+    // Dispute
+    private long _disputeVote = -1;
+    private long _disputeDeposit;
+
+    // Transfer
+    private string _transferToken = "qusd";
+    private string _transferReceiver = "";
+    private long _transferAmount;
 
     protected override async Task OnInitializedAsync()
     {
         try
         {
             var result = await Backend.QuerySmartContractAsync(ContractIndex, 1, []);
-            if (result.Length >= 40)
-                _basicInfo = (BitConverter.ToUInt64(result, 0), BitConverter.ToUInt64(result, 8),
-                              BitConverter.ToUInt64(result, 16), BitConverter.ToUInt64(result, 24),
-                              BitConverter.ToUInt64(result, 32));
+            if (result.Length >= 80)
+            {
+                _basicInfo = (
+                    BitConverter.ToUInt64(result, 0),   // OperationFee
+                    BitConverter.ToUInt64(result, 8),   // ShareholderFee
+                    BitConverter.ToUInt64(result, 16),  // BurnFee
+                    BitConverter.ToUInt64(result, 24),  // NIssuedEvent
+                    BitConverter.ToUInt64(result, 72)); // DepositAmountForDispute
+            }
         }
         catch { }
     }
@@ -175,33 +340,151 @@ else
             InputType = payload.InputType, PayloadHex = Convert.ToHexString(payload.GetPayloadBytes()), Description = desc });
     }
 
-    private async Task JoinBet()
+    private static byte[][] PackString(string s, int slotCount, int slotSize)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(s ?? "");
+        var totalBytes = slotCount * slotSize;
+        var packed = new byte[totalBytes];
+        Array.Copy(bytes, packed, Math.Min(bytes.Length, totalBytes));
+        var slots = new byte[slotCount][];
+        for (int i = 0; i < slotCount; i++)
+        {
+            slots[i] = new byte[slotSize];
+            Array.Copy(packed, i * slotSize, slots[i], 0, slotSize);
+        }
+        return slots;
+    }
+
+    private async Task CreateEvent()
     {
         _sending = true; _error = null; _result = null;
         try
         {
-            if (_joinSlots <= 0) { _error = "Slots must be positive."; return; }
-            if (_joinAmountPerSlot <= 0) { _error = "Amount per slot must be positive."; return; }
-            var tick = await GetTick();
-            var payload = new Qubic.Core.Contracts.Quottery.JoinBetPayload
+            if (string.IsNullOrWhiteSpace(_ceDesc)) { _error = "Description required."; return; }
+            if (string.IsNullOrWhiteSpace(_ceOption0) || string.IsNullOrWhiteSpace(_ceOption1))
+            { _error = "Both option labels required."; return; }
+            if (_ceEndDate <= DateTime.UtcNow) { _error = "End Date must be in the future."; return; }
+
+            // Eid and OpenDate are overridden by the contract; pass 0/0.
+            var qei = new Qubic.Core.Contracts.Quottery.CreateEventPayloadQtryEventInfo
             {
-                BetId = _joinBetId, NumberOfSlot = _joinSlots, Option = _joinOption
+                Eid = 0,
+                OpenDate = 0,
+                EndDate = PackDateAndTime(_ceEndDate),
+                Desc = PackString(_ceDesc, 4, 32),
+                Option0Desc = PackString(_ceOption0, 2, 32),
+                Option1Desc = PackString(_ceOption1, 2, 32),
             };
-            var total = (long)_joinSlots * _joinAmountPerSlot;
-            await Broadcast(total, tick, payload, $"Quottery Join Bet {_joinBetId}: {_joinSlots} slots @ {_joinAmountPerSlot:N0} QU, option {_joinOption}");
+
+            var tick = await GetTick();
+            var payload = new Qubic.Core.Contracts.Quottery.CreateEventPayload { Qei = qei };
+            await Broadcast(0, tick, payload, $"Quottery CreateEvent: {_ceDesc.Trim()}");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
     }
 
-    private async Task CancelBet()
+    private const ulong NullEventId = ulong.MaxValue; // GetActiveEvent uses NULL_INDEX = -1 sentinel
+
+    private async Task LoadActiveEvents()
+    {
+        _loadingEvents = true; _eventsError = null;
+        try
+        {
+            // Function 4 = GetActiveEvent → returns Array<u64, 4096> of active event IDs (slot index = eid % 4096).
+            var raw = await Backend.QuerySmartContractAsync(ContractIndex, 4, []);
+            var ids = new List<ulong>();
+            for (int i = 0; i + 8 <= raw.Length; i += 8)
+            {
+                var id = BitConverter.ToUInt64(raw, i);
+                if (id != NullEventId) ids.Add(id);
+            }
+            ids.Sort();
+
+            // Fetch metadata in batches of 64 via GetEventInfoBatch (function 5).
+            // Input: Array<u64, 64> eventIds. Output: Array<QtryEventInfo, 64> aqei.
+            var rows = new List<ActiveEventRow>();
+            for (int i = 0; i < ids.Count; i += 64)
+            {
+                var batchSize = Math.Min(64, ids.Count - i);
+                var input = new byte[64 * 8];
+                for (int j = 0; j < batchSize; j++)
+                    BitConverter.GetBytes(ids[i + j]).CopyTo(input, j * 8);
+                var batchOut = await Backend.QuerySmartContractAsync(ContractIndex, 5, input);
+                // QtryEventInfo size = 280 (8 eid + 8 openDate + 8 endDate + 4*32 desc + 2*32 opt0 + 2*32 opt1)
+                const int eiSize = 280;
+                for (int j = 0; j < batchSize && (j + 1) * eiSize <= batchOut.Length; j++)
+                {
+                    var span = new ReadOnlySpan<byte>(batchOut, j * eiSize, eiSize);
+                    var eid = BitConverter.ToUInt64(span.Slice(0, 8));
+                    var endDate = BitConverter.ToUInt64(span.Slice(16, 8));
+                    var desc = ReadString(span.Slice(24, 128));
+                    var opt0 = ReadString(span.Slice(152, 64));
+                    var opt1 = ReadString(span.Slice(216, 64));
+                    rows.Add(new ActiveEventRow(eid, desc, opt0, opt1, FormatDateAndTime(endDate)));
+                }
+            }
+            _activeEvents = rows;
+        }
+        catch (Exception ex) { _eventsError = ex.Message; }
+        finally { _loadingEvents = false; }
+    }
+
+    private static string ReadString(ReadOnlySpan<byte> bytes)
+    {
+        var end = bytes.Length;
+        for (int i = 0; i < bytes.Length; i++) { if (bytes[i] == 0) { end = i; break; } }
+        return System.Text.Encoding.UTF8.GetString(bytes.Slice(0, end));
+    }
+
+    private static string FormatDateAndTime(ulong packed)
+    {
+        if (packed == 0) return "";
+        var year   = (int)(packed >> 46) & 0xFFFF;
+        var month  = (int)(packed >> 42) & 0xF;
+        var day    = (int)(packed >> 37) & 0x1F;
+        var hour   = (int)(packed >> 32) & 0x1F;
+        var minute = (int)(packed >> 26) & 0x3F;
+        var second = (int)(packed >> 20) & 0x3F;
+        try { return new DateTime(year, month, day, hour, minute, second, DateTimeKind.Utc).ToString("yyyy-MM-dd HH:mm UTC"); }
+        catch { return $"raw={packed}"; }
+    }
+
+    private void UseEventId(ulong id)
+    {
+        _eventId = (long)id;
+        _activeTab = "Place Order";
+    }
+
+    private async Task PlaceOrder()
     {
         _sending = true; _error = null; _result = null;
         try
         {
             var tick = await GetTick();
-            var payload = new Qubic.Core.Contracts.Quottery.CancelBetPayload { BetId = _cancelBetId };
-            await Broadcast(0, tick, payload, $"Quottery Cancel Bet {_cancelBetId}");
+            Qubic.Core.Payloads.ITransactionPayload payload = _orderSide == SideAsk
+                ? new Qubic.Core.Contracts.Quottery.AddToAskOrderPayload
+                    { EventId = (ulong)_eventId, Option = (ulong)_option, Amount = (ulong)_amount, Price = _price }
+                : new Qubic.Core.Contracts.Quottery.AddToBidOrderPayload
+                    { EventId = (ulong)_eventId, Option = (ulong)_option, Amount = _amount, Price = _price };
+            await Broadcast(0, tick, payload, $"Quottery {_orderSide.ToUpper()} order: event {_eventId} option {_option} {_amount}@{_price}");
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _sending = false; }
+    }
+
+    private async Task RemoveOrder()
+    {
+        _sending = true; _error = null; _result = null;
+        try
+        {
+            var tick = await GetTick();
+            Qubic.Core.Payloads.ITransactionPayload payload = _orderSide == SideAsk
+                ? new Qubic.Core.Contracts.Quottery.RemoveAskOrderPayload
+                    { EventId = (ulong)_eventId, Option = (ulong)_option, Amount = (ulong)_amount, Price = _price }
+                : new Qubic.Core.Contracts.Quottery.RemoveBidOrderPayload
+                    { EventId = (ulong)_eventId, Option = (ulong)_option, Amount = (ulong)_amount, Price = _price };
+            await Broadcast(0, tick, payload, $"Quottery remove {_orderSide.ToUpper()} order: event {_eventId} option {_option} {_amount}@{_price}");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
@@ -213,65 +496,80 @@ else
         try
         {
             var tick = await GetTick();
-            var payload = new Qubic.Core.Contracts.Quottery.PublishResultPayload { BetId = _pubBetId, Option = _pubWinOption };
-            await Broadcast(0, tick, payload, $"Quottery Publish Result: Bet {_pubBetId}, winner option {_pubWinOption}");
+            var payload = new Qubic.Core.Contracts.Quottery.PublishResultPayload { EventId = (ulong)_eventId, Option = (ulong)_option };
+            await Broadcast(0, tick, payload, $"Quottery Publish Result: event {_eventId}, winning option {_option}");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
     }
 
-    private async Task IssueBet()
+    private async Task TryFinalize()
     {
         _sending = true; _error = null; _result = null;
         try
         {
-            if (string.IsNullOrWhiteSpace(_issueBetDesc)) { _error = "Description required."; return; }
-            if (_issueNumOptions < 1 || _issueNumOptions > 8) { _error = "Options must be 1-8."; return; }
-
-            var betDesc = new byte[32];
-            System.Text.Encoding.UTF8.GetBytes(_issueBetDesc.Trim()).AsSpan(0, Math.Min(_issueBetDesc.Trim().Length, 32)).CopyTo(betDesc);
-
-            var optionDescs = new byte[8][];
-            for (int i = 0; i < 8; i++)
-            {
-                optionDescs[i] = new byte[32];
-                if (i < _issueNumOptions && !string.IsNullOrWhiteSpace(_issueOptionDescs[i]))
-                {
-                    var b = System.Text.Encoding.UTF8.GetBytes(_issueOptionDescs[i].Trim());
-                    Array.Copy(b, optionDescs[i], Math.Min(b.Length, 32));
-                }
-            }
-
-            var oracleIds = new byte[8][];
-            var oracleLines = _issueOracleText.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            for (int i = 0; i < 8; i++)
-            {
-                if (i < oracleLines.Length)
-                {
-                    var err = IdentityValidation.Validate(oracleLines[i]);
-                    if (err != null) { _error = $"Oracle {i + 1}: {err}"; return; }
-                    oracleIds[i] = Qubic.Core.Entities.QubicIdentity.FromIdentity(oracleLines[i].Trim()).PublicKey;
-                }
-                else oracleIds[i] = new byte[32];
-            }
-
-            var oracleFees = new uint[8];
-            if (!string.IsNullOrWhiteSpace(_issueOracleFeesText))
-            {
-                var parts = _issueOracleFeesText.Split(',', StringSplitOptions.TrimEntries);
-                for (int i = 0; i < Math.Min(parts.Length, 8); i++)
-                    if (uint.TryParse(parts[i], out var fee)) oracleFees[i] = fee;
-            }
-
             var tick = await GetTick();
-            var payload = new Qubic.Core.Contracts.Quottery.IssueBetPayload
-            {
-                BetDesc = betDesc, OptionDesc = optionDescs, OracleProviderId = oracleIds,
-                OracleFees = oracleFees, CloseDate = _issueCloseDate, EndDate = _issueEndDate,
-                AmountPerSlot = (ulong)_issueAmountPerSlot, MaxBetSlotPerOption = _issueMaxSlots,
-                NumberOfOption = (uint)_issueNumOptions
-            };
-            await Broadcast(0, tick, payload, $"Quottery Issue Bet: {_issueBetDesc.Trim()} ({_issueNumOptions} options)");
+            var payload = new Qubic.Core.Contracts.Quottery.TryFinalizeEventPayload { EventId = (ulong)_eventId };
+            await Broadcast(0, tick, payload, $"Quottery Try Finalize Event {_eventId}");
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _sending = false; }
+    }
+
+    private async Task OpenDispute()
+    {
+        _sending = true; _error = null; _result = null;
+        try
+        {
+            if (_disputeDeposit <= 0) { _error = "Deposit amount required to open a dispute."; return; }
+            var tick = await GetTick();
+            var payload = new Qubic.Core.Contracts.Quottery.DisputePayload { EventId = (ulong)_eventId };
+            await Broadcast(_disputeDeposit, tick, payload, $"Quottery Open Dispute on event {_eventId} (deposit {_disputeDeposit:N0} QU)");
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _sending = false; }
+    }
+
+    private async Task ResolveDispute()
+    {
+        _sending = true; _error = null; _result = null;
+        try
+        {
+            var tick = await GetTick();
+            var payload = new Qubic.Core.Contracts.Quottery.ResolveDisputePayload { EventId = (ulong)_eventId, Vote = _disputeVote };
+            await Broadcast(0, tick, payload, $"Quottery Resolve Dispute event {_eventId}, vote {_disputeVote}");
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _sending = false; }
+    }
+
+    private async Task ClaimReward()
+    {
+        _sending = true; _error = null; _result = null;
+        try
+        {
+            var tick = await GetTick();
+            var payload = new Qubic.Core.Contracts.Quottery.UserClaimRewardPayload { EventId = (ulong)_eventId };
+            await Broadcast(0, tick, payload, $"Quottery Claim Reward event {_eventId}");
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _sending = false; }
+    }
+
+    private async Task TransferToken()
+    {
+        _sending = true; _error = null; _result = null;
+        try
+        {
+            var err = IdentityValidation.Validate(_transferReceiver);
+            if (err != null) { _error = err; return; }
+            if (_transferAmount <= 0) { _error = "Amount must be positive."; return; }
+            var pk = Qubic.Core.Entities.QubicIdentity.FromIdentity(_transferReceiver.Trim()).PublicKey;
+            var tick = await GetTick();
+            Qubic.Core.Payloads.ITransactionPayload payload = _transferToken == "qusd"
+                ? new Qubic.Core.Contracts.Quottery.TransferQUSDPayload { Receiver = pk, Amount = _transferAmount }
+                : new Qubic.Core.Contracts.Quottery.TransferQTRYGOVPayload { Receiver = pk, Amount = _transferAmount };
+            await Broadcast(0, tick, payload, $"Quottery transfer {_transferToken.ToUpperInvariant()} {_transferAmount:N0} to {_transferReceiver.Trim()[..8]}...");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
