@@ -11,10 +11,14 @@
 @if (_fees != null)
 {
     <div class="small text-muted mb-2">
-        Fees &mdash; Issuance: <strong>@_fees.Value.issuance.ToString("N0")</strong> |
+        Fees &mdash;
+        Issuance: <strong>@_fees.Value.issuance.ToString("N0")</strong> |
         Pool: <strong>@_fees.Value.pool.ToString("N0")</strong> |
         Transfer: <strong>@_fees.Value.transfer.ToString("N0")</strong> |
         Swap: <strong>@_fees.Value.swap.ToString("N0")</strong> |
+        Shareholder: <strong>@_fees.Value.shareholder.ToString("N0")</strong> |
+        InvestRewards: <strong>@_fees.Value.investRewards.ToString("N0")</strong> |
+        Qx: <strong>@_fees.Value.qx.ToString("N0")</strong> |
         Burn: <strong>@_fees.Value.burn.ToString("N0")</strong>
     </div>
 }
@@ -102,6 +106,90 @@ else
                 </div></div>
                 break;
 
+            case "Inspect":
+                <div class="card mb-3"><div class="card-header">Pool Inspector (read-only)</div><div class="card-body">
+                    <p class="small text-muted">Reads pool reserves, your LP balance, and computes swap quotes. No transactions are sent.</p>
+                    <AssetSelector @bind-IssuerValue="_inspectIssuer" @bind-NameValue="_inspectName" />
+                    <div class="d-flex gap-2 mb-2">
+                        <button class="btn btn-sm btn-outline-primary" @onclick="LoadInspect" disabled="@_inspectLoading">
+                            @(_inspectLoading ? "Loading..." : "Load Pool State")
+                        </button>
+                    </div>
+                    @if (_inspectError != null) { <div class="alert alert-warning small py-1 mb-2">@_inspectError</div> }
+                    @if (_poolState != null)
+                    {
+                        var p = _poolState.Value;
+                        <div class="small mb-2">
+                            <div>Pool exists: <strong>@(p.exists != 0 ? "yes" : "no")</strong></div>
+                            @if (p.exists != 0)
+                            {
+                                <div>QU reserve: <strong>@p.quReserve.ToString("N0")</strong></div>
+                                <div>Asset reserve: <strong>@p.assetReserve.ToString("N0")</strong></div>
+                                <div>Total liquidity: <strong>@p.totalLiquidity.ToString("N0")</strong></div>
+                                @if (_myLiquidity != null)
+                                {
+                                    <div>Your LP balance: <strong>@_myLiquidity.Value.ToString("N0")</strong></div>
+                                }
+                                else if (Seed.HasSeed)
+                                {
+                                    <div class="text-muted">Your LP balance: (couldn't read)</div>
+                                }
+                            }
+                        </div>
+                    }
+                </div></div>
+
+                <div class="card"><div class="card-header">Swap Quote (read-only)</div><div class="card-body">
+                    <p class="small text-muted">Uses the same pool above. The 4 quote functions answer the inverse of each swap procedure.</p>
+                    <div class="mb-2">
+                        <label class="form-label-sm">Quote Type</label>
+                        <select class="form-select form-select-sm" @bind="_quoteType">
+                            <option value="exactQuIn">Exact QU in → Asset out</option>
+                            <option value="exactQuOut">QU in needed → Exact Asset out</option>
+                            <option value="exactAssetIn">Exact Asset in → QU out</option>
+                            <option value="exactAssetOut">Asset in needed → Exact QU out</option>
+                        </select>
+                    </div>
+                    <div class="mb-2"><label class="form-label-sm">Amount</label>
+                        <input type="number" class="form-control form-control-sm" min="1" @bind="_quoteAmount" /></div>
+                    <button class="btn btn-sm btn-outline-primary" @onclick="GetQuote" disabled="@_inspectLoading">@(_inspectLoading ? "..." : "Calculate")</button>
+                    @if (_quoteResult != null)
+                    {
+                        <div class="small mt-2">Result: <strong>@_quoteResult.Value.ToString("N0")</strong> @_quoteResultLabel</div>
+                    }
+                </div></div>
+
+                @if (_investRewards != null)
+                {
+                    <div class="small text-muted mt-2">
+                        InvestRewards: fee <strong>@_investRewards.Value.fee.ToString("N0")</strong> →
+                        recipient <span class="mono">@_investRewards.Value.recipient</span>
+                    </div>
+                }
+                break;
+
+            case "Admin":
+                <div class="card mb-3"><div class="card-header">Set Invest Rewards Recipient</div><div class="card-body">
+                    <p class="small text-muted">Routes invest-rewards fees to a new identity. Caller must have admin authority on the contract.</p>
+                    <div class="mb-2"><label class="form-label-sm">New Recipient Identity</label>
+                        <input class="form-control form-control-sm mono @IdentityValidation.CssClass(_adminInvestId)"
+                               @bind="_adminInvestId" placeholder="IDENTITY..." /></div>
+                    <button class="btn btn-warning btn-sm" @onclick="SetInvestRewards" disabled="@_sending">@(_sending ? "Sending..." : "Set Recipient")</button>
+                </div></div>
+
+                <div class="card"><div class="card-header">Transfer Share Management Rights</div><div class="card-body">
+                    <p class="small text-muted">Hands management of QSwap-issued asset shares to another contract index (e.g. Qx). Requires share ownership.</p>
+                    <AssetSelector @bind-IssuerValue="_adminMgmtIssuer" @bind-NameValue="_adminMgmtName" />
+                    <div class="row g-2 mb-2">
+                        <div class="col"><label class="form-label-sm">Number of Shares</label>
+                            <input type="number" class="form-control form-control-sm" @bind="_adminMgmtShares" /></div>
+                        <div class="col"><label class="form-label-sm">New Managing Contract Index</label>
+                            <input type="number" class="form-control form-control-sm" min="0" @bind="_adminMgmtNewIndex" /></div>
+                    </div>
+                    <button class="btn btn-warning btn-sm" @onclick="TransferMgmtRights" disabled="@_sending">@(_sending ? "Sending..." : "Transfer Rights")</button>
+                </div></div>
+                break;
+
             case "Swap":
                 <div class="card"><div class="card-header">Swap</div><div class="card-body">
                     <div class="mb-2"><label class="form-label-sm">Swap Type</label>
@@ -160,13 +248,13 @@ else
 }
 
 @code {
-    private static readonly string[] _tabs = ["Issue", "Transfer", "Pool", "Liquidity", "Swap"];
+    private static readonly string[] _tabs = ["Issue", "Transfer", "Pool", "Liquidity", "Swap", "Inspect", "Admin"];
     private string _activeTab = "Swap";
     private bool _sending;
     private string? _result;
     private string? _error;
     private const int ContractIndex = 3;
-    private (uint issuance, uint pool, uint transfer, uint swap, uint burn)? _fees;
+    private (uint issuance, uint pool, uint transfer, uint swap, uint shareholder, uint investRewards, uint qx, uint burn)? _fees;
 
     // Issue
     private string _issueName = ""; private long _issueShares; private string _issueUnit = ""; private int _issueDecimals;
@@ -181,14 +269,38 @@ else
     private string _swapType = "exactQuForAsset"; private string _swapIssuer = ""; private string _swapName = "";
     private long _swapAmount1; private long _swapAmount2;
 
+    // Inspect
+    private string _inspectIssuer = ""; private string _inspectName = "";
+    private bool _inspectLoading;
+    private string? _inspectError;
+    private (long exists, long quReserve, long assetReserve, long totalLiquidity)? _poolState;
+    private long? _myLiquidity;
+    private (uint fee, string recipient)? _investRewards;
+    private string _quoteType = "exactQuIn";
+    private long _quoteAmount;
+    private long? _quoteResult;
+    private string _quoteResultLabel = "";
+
+    // Admin
+    private string? _adminInvestId;
+    private string _adminMgmtIssuer = ""; private string _adminMgmtName = "";
+    private long _adminMgmtShares; private uint _adminMgmtNewIndex;
+
     protected override async Task OnInitializedAsync()
     {
         try
         {
             var result = await Backend.QuerySmartContractAsync(ContractIndex, 1, []);
+            // FeesOutput: 8 consecutive uint32s — assetIssuance, poolCreation, transfer,
+            // swap, shareholder, investRewards, qx, burn.
             if (result.Length >= 32)
-                _fees = (BitConverter.ToUInt32(result, 0), BitConverter.ToUInt32(result, 4),
-                         BitConverter.ToUInt32(result, 8), BitConverter.ToUInt32(result, 12),
+                _fees = (BitConverter.ToUInt32(result, 0),
+                         BitConverter.ToUInt32(result, 4),
+                         BitConverter.ToUInt32(result, 8),
+                         BitConverter.ToUInt32(result, 12),
+                         BitConverter.ToUInt32(result, 16),
+                         BitConverter.ToUInt32(result, 20),
+                         BitConverter.ToUInt32(result, 24),
                          BitConverter.ToUInt32(result, 28));
         }
         catch { }
@@ -304,6 +416,128 @@ else
                 };
                 await Broadcast(0, tick, payload, $"QSwap Remove Liquidity: burn {_liqBurnAmount:N0}");
             }
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _sending = false; }
+    }
+
+    private async Task LoadInspect()
+    {
+        _inspectLoading = true; _inspectError = null;
+        _poolState = null; _myLiquidity = null; _investRewards = null;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_inspectName)) { _inspectError = "Asset name required."; return; }
+            var issuer = ParseIssuer(_inspectIssuer);
+            var assetName = AssetNameHelper.ToUlong(_inspectName.Trim());
+
+            // GetPoolBasicState (function 2): in = AssetIssuer(32) + AssetName(8) = 40 bytes;
+            // out = poolExists(8) + reservedQu(8) + reservedAsset(8) + totalLiquidity(8) = 32 bytes
+            var poolIn = new byte[40];
+            issuer.AsSpan(0, 32).CopyTo(poolIn.AsSpan(0));
+            BitConverter.GetBytes(assetName).CopyTo(poolIn, 32);
+            var poolOut = await Backend.QuerySmartContractAsync(ContractIndex, 2, poolIn);
+            if (poolOut.Length >= 32)
+            {
+                _poolState = (BitConverter.ToInt64(poolOut, 0),
+                              BitConverter.ToInt64(poolOut, 8),
+                              BitConverter.ToInt64(poolOut, 16),
+                              BitConverter.ToInt64(poolOut, 24));
+            }
+
+            // GetLiquidityOf (function 3): in = AssetIssuer(32) + AssetName(8) + Account(32) = 72 bytes
+            if (Seed.Identity is { } myIdent)
+            {
+                var liqIn = new byte[72];
+                issuer.AsSpan(0, 32).CopyTo(liqIn.AsSpan(0));
+                BitConverter.GetBytes(assetName).CopyTo(liqIn, 32);
+                myIdent.PublicKey.AsSpan(0, 32).CopyTo(liqIn.AsSpan(40));
+                var liqOut = await Backend.QuerySmartContractAsync(ContractIndex, 3, liqIn);
+                if (liqOut.Length >= 8) _myLiquidity = BitConverter.ToInt64(liqOut, 0);
+            }
+
+            // InvestRewardsInfo (function 8): empty in; out = fee(4) + pad(4) + id(32) = 40 bytes
+            var irOut = await Backend.QuerySmartContractAsync(ContractIndex, 8, []);
+            if (irOut.Length >= 40)
+            {
+                var fee = BitConverter.ToUInt32(irOut, 0);
+                var idPk = irOut.AsSpan(8, 32).ToArray();
+                var ident = Qubic.Core.Entities.QubicIdentity.FromPublicKey(idPk).ToString();
+                _investRewards = (fee, ident);
+            }
+        }
+        catch (Exception ex) { _inspectError = ex.Message; }
+        finally { _inspectLoading = false; }
+    }
+
+    private async Task GetQuote()
+    {
+        _inspectLoading = true; _inspectError = null; _quoteResult = null; _quoteResultLabel = "";
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_inspectName)) { _inspectError = "Asset name required (load pool first)."; return; }
+            if (_quoteAmount <= 0) { _inspectError = "Amount must be positive."; return; }
+            var issuer = ParseIssuer(_inspectIssuer);
+            var assetName = AssetNameHelper.ToUlong(_inspectName.Trim());
+
+            // All four quote inputs share the same shape: AssetIssuer(32) + AssetName(8) + amount(8) = 48
+            var input = new byte[48];
+            issuer.AsSpan(0, 32).CopyTo(input.AsSpan(0));
+            BitConverter.GetBytes(assetName).CopyTo(input, 32);
+            BitConverter.GetBytes(_quoteAmount).CopyTo(input, 40);
+
+            (uint funcId, string label) = _quoteType switch
+            {
+                "exactQuIn"    => (4u, "asset out"),
+                "exactQuOut"   => (5u, "QU in needed"),
+                "exactAssetIn" => (6u, "QU out"),
+                _              => (7u, "asset in needed"),
+            };
+            var output = await Backend.QuerySmartContractAsync(ContractIndex, funcId, input);
+            if (output.Length >= 8)
+            {
+                _quoteResult = BitConverter.ToInt64(output, 0);
+                _quoteResultLabel = label;
+            }
+        }
+        catch (Exception ex) { _inspectError = ex.Message; }
+        finally { _inspectLoading = false; }
+    }
+
+    private async Task SetInvestRewards()
+    {
+        _sending = true; _error = null; _result = null;
+        try
+        {
+            var pk = ParseIssuer(_adminInvestId);
+            var tick = await GetTick();
+            var payload = new Qubic.Core.Contracts.Qswap.SetInvestRewardsInfoPayload { NewInvestRewardsId = pk };
+            await Broadcast(0, tick, payload, "QSwap SetInvestRewardsInfo");
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _sending = false; }
+    }
+
+    private async Task TransferMgmtRights()
+    {
+        _sending = true; _error = null; _result = null;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_adminMgmtName)) { _error = "Asset name required."; return; }
+            if (_adminMgmtShares <= 0) { _error = "Shares must be positive."; return; }
+            var tick = await GetTick();
+            var asset = new Qubic.Core.Contracts.QubicAsset
+            {
+                Issuer = ParseIssuer(_adminMgmtIssuer),
+                AssetName = AssetNameHelper.ToUlong(_adminMgmtName.Trim())
+            };
+            var payload = new Qubic.Core.Contracts.Qswap.TransferShareManagementRightsPayload
+            {
+                Asset = asset,
+                NumberOfShares = _adminMgmtShares,
+                NewManagingContractIndex = _adminMgmtNewIndex
+            };
+            await Broadcast(0, tick, payload, $"QSwap TransferShareMgmtRights {_adminMgmtName.Trim()}: {_adminMgmtShares:N0} shares → contract {_adminMgmtNewIndex}");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
