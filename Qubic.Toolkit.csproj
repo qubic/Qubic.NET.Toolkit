@@ -26,30 +26,15 @@
   <ItemGroup>
     <PackageReference Include="Photino.Blazor" Version="4.0.13" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.*" />
+    <!-- Pulls Qubic.Core, Qubic.Crypto, Qubic.Network, Qubic.Rpc, Qubic.Bob,
+         Qubic.Serialization transitively. ContractGen parsing source is
+         vendored under Services/ContractParsing/. -->
+    <PackageReference Include="Qubic.Services" Version="1.4.1" />
   </ItemGroup>
 
   <!-- Required for server mode (WebApplication, Blazor Server, etc.) -->
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="deps/Qubic.Net/src/Qubic.Services/Qubic.Services.csproj" />
-  </ItemGroup>
-
-  <!-- Exclude submodule files from Razor/Compile auto-discovery -->
-  <ItemGroup>
-    <Compile Remove="deps/**" />
-    <Content Remove="deps/**" />
-    <None Remove="deps/**" />
-  </ItemGroup>
-
-  <!-- Re-include ContractGen parsing files for runtime C++ header parsing -->
-  <ItemGroup>
-    <Compile Include="deps/Qubic.Net/tools/Qubic.ContractGen/Parsing/ContractModel.cs" Link="Services/ContractParsing/ContractModel.cs" />
-    <Compile Include="deps/Qubic.Net/tools/Qubic.ContractGen/Parsing/CppHeaderParser.cs" Link="Services/ContractParsing/CppHeaderParser.cs" />
-    <Compile Include="deps/Qubic.Net/tools/Qubic.ContractGen/Parsing/TypeMapper.cs" Link="Services/ContractParsing/TypeMapper.cs" />
-    <Compile Include="deps/Qubic.Net/tools/Qubic.ContractGen/Generation/CSharpEmitter.cs" Link="Services/ContractParsing/CSharpEmitter.cs" />
   </ItemGroup>
 
   <ItemGroup>
