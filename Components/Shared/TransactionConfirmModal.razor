@@ -1,0 +1,94 @@
+@inject TransactionConfirmService Confirm
+@implements IDisposable
+
+@if (_preview is { } p)
+{
+    <div class="modal-backdrop fade show" style="z-index: 1040;"></div>
+    <div class="modal fade show d-block" tabindex="-1" style="z-index: 1050;" role="dialog">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-shield-check me-2 text-warning"></i>Confirm Transaction
+                    </h5>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <div class="text-muted small mb-1">Action</div>
+                        <div class="fw-bold">@p.Action</div>
+                    </div>
+                    <div class="row g-2 small mb-3">
+                        <div class="col-6">
+                            <div class="text-muted">Amount (sent with tx)</div>
+                            <div class="fw-bold">
+                                @if (p.Amount > 0)
+                                {
+                                    <span class="text-warning">@p.Amount.ToString("N0") QU</span>
+                                }
+                                else
+                                {
+                                    <span class="text-muted">0 QU</span>
+                                }
+                            </div>
+                        </div>
+                        <div class="col-6">
+                            <div class="text-muted">Target tick</div>
+                            <div class="fw-bold">@p.TargetTick.ToString("N0")</div>
+                        </div>
+                    </div>
+                    <div class="small mb-2">
+                        <div class="text-muted">From</div>
+                        <div class="mono text-truncate" title="@p.Source">@p.Source</div>
+                    </div>
+                    <div class="small mb-2">
+                        <div class="text-muted">To</div>
+                        <div class="mono text-truncate" title="@p.Destination">
+                            @p.Destination
+                            @if (p.ContractIndex is int ci)
+                            {
+                                <span class="badge bg-secondary ms-2">@(Qubic.Core.QubicContracts.GetContractName(ci) ?? $"contract {ci}")</span>
+                            }
+                        </div>
+                    </div>
+                    <div class="small text-muted">
+                        InputType: <span class="mono">@p.InputType</span>
+                        &middot; InputSize: <span class="mono">@p.InputSize</span> bytes
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" @onclick="() => Decide(false)">Cancel</button>
+                    <button type="button" class="btn btn-primary" @onclick="() => Decide(true)" autofocus>
+                        Confirm &amp; Broadcast
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private TransactionPreview? _preview;
+
+    protected override void OnInitialized()
+    {
+        Confirm.OnRequest += OnRequest;
+    }
+
+    private void OnRequest(TransactionPreview preview)
+    {
+        _preview = preview;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void Decide(bool confirmed)
+    {
+        _preview = null;
+        Confirm.Resolve(confirmed);
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        Confirm.OnRequest -= OnRequest;
+    }
+}

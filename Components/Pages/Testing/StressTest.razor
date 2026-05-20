@@ -10,6 +10,7 @@
 @inject SeedSessionService SeedSession
 @inject TickMonitorService TickMonitor
 @inject IJSRuntime JS
+@inject TransactionConfirmService Confirm
 @implements IDisposable
 
 <h4><i class="bi bi-lightning-charge me-2"></i>Stress Test</h4>
@@ -855,6 +856,17 @@
 
     private async Task StartQuickTest()
     {
+        if (_testType == TestType.TransactionFlood)
+        {
+            var seeds = ParseSeedLines(_txSeeds);
+            var totalTxs = seeds.Length * _txPerSeedPerTick;
+            if (!await Confirm.ConfirmAsync(new TransactionPreview(
+                    Action: $"Stress test: TX flood — {seeds.Length} seed(s) × {_txPerSeedPerTick} tx each = {totalTxs:N0} signed transactions",
+                    Amount: _txAmount, Source: $"{seeds.Length} seed(s)",
+                    Destination: _txDestination ?? "(unset)", TargetTick: (uint)(TickMonitor.Tick + _txTickOffset),
+                    InputType: 0, InputSize: 0)))
+            { return; }
+        }
         _stats = new TestStats();
         _errorLog.Clear();
         _running = true;

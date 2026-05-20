@@ -9,6 +9,7 @@
 @inject TransactionTrackerService TxTracker
 @inject QubicSettingsService Settings
 @inject IJSRuntime JS
+@inject TransactionConfirmService Confirm
 
 <h4><i class="bi bi-currency-exchange me-2"></i>Computor-Controlled Fund (CCF)</h4>
 <p class="text-muted">CCF proposals, voting, transfers, and subscription management (Contract 8).</p>
@@ -1105,6 +1106,14 @@
         var tick = await GetTick();
         var dest = QubicIdentity.FromPublicKey(Qubic.Core.QubicContracts.GetContractPublicKey((int)CcfIndex));
         var payload = new GenericContractPayload((ushort)(desc.Contains("Vote") ? 2 : 1), data);
+        if (!await Confirm.ConfirmAsync(new TransactionPreview(
+                Action: desc, Amount: amount, Source: Seed.Identity?.ToString() ?? "(no seed)",
+                Destination: dest.ToString(), TargetTick: tick,
+                InputType: payload.InputType, InputSize: payload.GetPayloadBytes().Length,
+                ContractIndex: (int)CcfIndex)))
+        {
+            _error = "Cancelled by user."; return;
+        }
         var tx = Seed.CreateAndSignTransaction(dest, amount, tick, payload);
         var result = await Backend.BroadcastTransactionAsync(tx);
         _result = result.TransactionId;

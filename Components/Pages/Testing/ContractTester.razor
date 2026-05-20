@@ -6,6 +6,7 @@
 @inject SeedSessionService Seed
 @inject TickMonitorService TickMonitor
 @inject TransactionTrackerService TxTracker
+@inject TransactionConfirmService Confirm
 
 <h4><i class="bi bi-file-code me-2"></i>Smart Contract Tester</h4>
 <p class="text-muted">Parse C++ contract headers and call functions/procedures dynamically.</p>
@@ -324,6 +325,13 @@
             var payload = new GenericContractPayload((ushort)proc.InputType, inputBytes);
             var dest = QubicIdentity.FromPublicKey(QubicContracts.GetContractPublicKey(_contractIndex));
 
+            if (!await Confirm.ConfirmAsync(new TransactionPreview(
+                    Action: $"SC Tester: contract {_contractIndex} procedure {proc.Name} (inputType {proc.InputType})",
+                    Amount: amount, Source: Seed.Identity?.ToString() ?? "(no seed)",
+                    Destination: dest.ToString(), TargetTick: tick,
+                    InputType: (ushort)proc.InputType, InputSize: payload.GetPayloadBytes().Length,
+                    ContractIndex: _contractIndex)))
+            { state.Error = "Cancelled by user."; return; }
             var tx = Seed.CreateAndSignTransaction(dest, amount, tick, payload);
             var result = await Backend.BroadcastTransactionAsync(tx);
 

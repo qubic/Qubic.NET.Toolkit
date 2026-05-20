@@ -5,6 +5,7 @@
 @inject TickMonitorService TickMonitor
 @inject TransactionTrackerService TxTracker
 @inject QubicSettingsService Settings
+@inject TransactionConfirmService Confirm
 
 <h4>Send to Many</h4>
 <p class="text-muted">Send QU to up to 25 recipients in a single transaction (QUTIL SendToManyV1).</p>
@@ -267,6 +268,13 @@ else
 
             var dest = Qubic.Core.Entities.QubicIdentity.FromPublicKey(Qubic.Core.QubicContracts.GetContractPublicKey(Qubic.Core.QubicContracts.Qutil));
             var totalAmount = payload.TotalAmount + (_fee ?? 0);
+            if (!await Confirm.ConfirmAsync(new TransactionPreview(
+                    Action: $"Send to Many ({payload.TotalAmount:N0} QU across recipients + {(_fee ?? 0):N0} fee)",
+                    Amount: totalAmount, Source: Seed.Identity?.ToString() ?? "(no seed)",
+                    Destination: dest.ToString(), TargetTick: tick,
+                    InputType: payload.InputType, InputSize: payload.GetPayloadBytes().Length,
+                    ContractIndex: Qubic.Core.QubicContracts.Qutil)))
+            { _error = "Cancelled by user."; return; }
             var tx = Seed.CreateAndSignTransaction(dest, totalAmount, tick, payload);
             var result = await Backend.BroadcastTransactionAsync(tx);
             _result = result.TransactionId;

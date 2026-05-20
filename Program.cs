@@ -64,6 +64,7 @@ class Program
         services.AddSingleton<PeerAutoDiscoverService>();
         services.AddSingleton<QubicStaticService>();
         services.AddSingleton<LabelService>();
+        services.AddSingleton<TransactionConfirmService>();
     }
 
     static void RunDesktop(string[] args)

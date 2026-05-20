@@ -1,5 +1,6 @@
 @page "/tx/import"
 @inject QubicBackendService Backend
+@inject TransactionConfirmService Confirm
 
 <h4>Import & Broadcast</h4>
 <p class="text-muted">Import a pre-signed transaction (hex or base64) and broadcast it to the network.</p>
@@ -125,6 +126,12 @@
 
         try
         {
+            if (!await Confirm.ConfirmAsync(new TransactionPreview(
+                    Action: $"Broadcast imported pre-signed transaction ({_decoded.TotalSize} bytes)",
+                    Amount: _decoded.Amount, Source: _decoded.Source,
+                    Destination: _decoded.Destination, TargetTick: _decoded.Tick,
+                    InputType: (ushort)_decoded.InputType, InputSize: _decoded.InputSize)))
+            { _error = "Cancelled by user."; return; }
             // Broadcast raw bytes via RPC (base64 encoded)
             var encoded = Convert.ToBase64String(_decoded.RawBytes);
 

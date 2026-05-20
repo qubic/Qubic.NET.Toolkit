@@ -8,6 +8,7 @@
 @inject TickMonitorService TickMonitor
 @inject TransactionTrackerService TxTracker
 @inject QubicSettingsService Settings
+@inject TransactionConfirmService Confirm
 
 <h4><i class="bi bi-bank me-2"></i>Governance</h4>
 <p class="text-muted">General Quorum Model Proposals (GQMProp) — revenue donation and governance voting.</p>
@@ -1000,6 +1001,14 @@
     async Task Broadcast(uint contractIndex, long amount, uint tick, Qubic.Core.Payloads.ITransactionPayload payload, string desc)
     {
         var dest = QubicIdentity.FromPublicKey(Qubic.Core.QubicContracts.GetContractPublicKey((int)contractIndex));
+        if (!await Confirm.ConfirmAsync(new TransactionPreview(
+                Action: desc, Amount: amount, Source: Seed.Identity?.ToString() ?? "(no seed)",
+                Destination: dest.ToString(), TargetTick: tick,
+                InputType: payload.InputType, InputSize: payload.GetPayloadBytes().Length,
+                ContractIndex: (int)contractIndex)))
+        {
+            _error = "Cancelled by user."; return;
+        }
         var tx = Seed.CreateAndSignTransaction(dest, amount, tick, payload);
         var result = await Backend.BroadcastTransactionAsync(tx);
         _result = result.TransactionId;

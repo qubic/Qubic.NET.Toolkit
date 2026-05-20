@@ -5,6 +5,7 @@
 @inject TickMonitorService TickMonitor
 @inject TransactionTrackerService TxTracker
 @inject QubicSettingsService Settings
+@inject TransactionConfirmService Confirm
 
 <h4>Custom Transaction</h4>
 <p class="text-muted">Build an arbitrary transaction to any contract or address.</p>
@@ -153,6 +154,12 @@ else
             var data = string.IsNullOrWhiteSpace(_payloadHex) ? [] : Convert.FromHexString(_payloadHex.Trim());
             var payload = new GenericContractPayload(_inputType, data);
 
+            if (!await Confirm.ConfirmAsync(new TransactionPreview(
+                    Action: $"Custom transaction (inputType {_inputType}, {data.Length} bytes payload)",
+                    Amount: _amount, Source: Seed.Identity?.ToString() ?? "(no seed)",
+                    Destination: dest.ToString(), TargetTick: tick,
+                    InputType: payload.InputType, InputSize: payload.GetPayloadBytes().Length)))
+            { _error = "Cancelled by user."; return; }
             var tx = Seed.CreateAndSignTransaction(dest, _amount, tick, payload);
             var result = await Backend.BroadcastTransactionAsync(tx);
             _result = result.TransactionId;

@@ -4,6 +4,7 @@
 @inject TickMonitorService TickMonitor
 @inject TransactionTrackerService TxTracker
 @inject QubicSettingsService Settings
+@inject TransactionConfirmService Confirm
 
 <h4>Quottery (Order-Book Betting)</h4>
 <p class="text-muted">Create events, place / cancel orders, publish results, dispute, claim rewards, or transfer QUSD/QTRYGOV.</p>
@@ -11,11 +12,20 @@
 @if (_basicInfo != null)
 {
     <div class="small text-muted mb-2">
-        Operation Fee: <strong>@_basicInfo.Value.opFee.ToString("N0")</strong> |
-        Shareholder: <strong>@_basicInfo.Value.shFee.ToString("N0")</strong> |
+        Op Fee: <strong>@_basicInfo.Value.opFee.ToString("N0")</strong> |
+        SH Fee: <strong>@_basicInfo.Value.shFee.ToString("N0")</strong> |
         Burn: <strong>@_basicInfo.Value.burnFee.ToString("N0")</strong> |
-        Events Issued: <strong>@_basicInfo.Value.nEvents.ToString("N0")</strong> |
-        Dispute Deposit: <strong>@_basicInfo.Value.disputeDeposit.ToString("N0")</strong>
+        Fee/Day: <strong>@_basicInfo.Value.feePerDay.ToString("N0")</strong> |
+        AntiSpam: <strong>@_basicInfo.Value.antiSpam.ToString("N0")</strong> |
+        Dispute Deposit: <strong>@_basicInfo.Value.disputeDeposit.ToString("N0")</strong> |
+        Events Issued: <strong>@_basicInfo.Value.nEvents.ToString("N0")</strong>
+    </div>
+}
+else
+{
+    <div class="alert alert-warning small py-1 mb-2">
+        Couldn't read Quottery <code>BasicInfo</code>. The fee-aware broadcasts below will fall back to
+        zero <code>invocationReward</code>, which the contract refuses for most procedures.
     </div>
 }
 
@@ -234,8 +244,11 @@ else
                         <div class="col"><label class="form-label-sm">Resolve Vote (option index, -1 to skip)</label>
                             <input type="number" class="form-control form-control-sm" @bind="_disputeVote" /></div>
                     </div>
-                    <div class="mb-2"><label class="form-label-sm">Deposit Amount (open dispute, QU)</label>
-                        <input type="number" class="form-control form-control-sm" min="0" @bind="_disputeDeposit" /></div>
+                    <div class="small text-muted mb-2">
+                        Opening a dispute sends exactly <strong>@(_basicInfo?.disputeDeposit.ToString("N0") ?? "?")</strong> QU
+                        as the deposit (from the contract's <code>BasicInfo</code>). Resolving sends the fixed
+                        <strong>@ResolveDisputeMinAmount.ToString("N0")</strong> QU which the contract then refunds in full.
+                    </div>
                     <button class="btn btn-warning me-2" @onclick="OpenDispute" disabled="@_sending">@(_sending ? "Sending..." : "Open Dispute")</button>
                     <button class="btn btn-primary" @onclick="ResolveDispute" disabled="@_sending">@(_sending ? "Sending..." : "Resolve Dispute")</button>
                 </div></div>
@@ -333,7 +346,20 @@ else
     private string? _result;
     private string? _error;
     private const int ContractIndex = 2;
-    private (ulong opFee, ulong shFee, ulong burnFee, ulong nEvents, ulong disputeDeposit)? _basicInfo;
+    // BasicInfo (qubic_getQuery, function 1) layout — must match Quottery.h BasicInfoOutput:
+    //   0  OperationFee (u64)
+    //   8  ShareholderFee (u64)
+    //   16 BurnFee (u64)
+    //   24 NIssuedEvent (u64)
+    //   32 ShareholdersRevenue (u64)
+    //   40 OperationRevenue (u64)
+    //   48 BurnedAmount (u64)
+    //   56 MFeePerDay (u64)         <-- CreateEvent fee unit (× ceil(duration_days))
+    //   64 AntiSpamAmount (u64)     <-- Add/Remove Ask/Bid orders
+    //   72 DepositAmountForDispute (u64) <-- exact amount for PublishResult + Dispute
+    //   80 GameOperator (id, 32 bytes)
+    private (ulong opFee, ulong shFee, ulong burnFee, ulong nEvents,
+             ulong feePerDay, ulong antiSpam, ulong disputeDeposit)? _basicInfo;
 
     // Shared order/event state
     private string _orderSide = SideAsk;
@@ -344,7 +370,6 @@ else
 
     // Dispute
     private long _disputeVote = -1;
-    private long _disputeDeposit;
 
     // Transfer
     private string _transferToken = "qusd";
@@ -363,6 +388,8 @@ else
                     BitConverter.ToUInt64(result, 8),   // ShareholderFee
                     BitConverter.ToUInt64(result, 16),  // BurnFee
                     BitConverter.ToUInt64(result, 24),  // NIssuedEvent
+                    BitConverter.ToUInt64(result, 56),  // MFeePerDay
+                    BitConverter.ToUInt64(result, 64),  // AntiSpamAmount
                     BitConverter.ToUInt64(result, 72)); // DepositAmountForDispute
             }
         }
@@ -376,6 +403,14 @@ else
     private async Task Broadcast(long amount, uint tick, Qubic.Core.Payloads.ITransactionPayload payload, string desc)
     {
         var dest = Qubic.Core.Entities.QubicIdentity.FromPublicKey(Qubic.Core.QubicContracts.GetContractPublicKey(ContractIndex));
+        if (!await Confirm.ConfirmAsync(new TransactionPreview(
+                Action: desc, Amount: amount, Source: Seed.Identity?.ToString() ?? "(no seed)",
+                Destination: dest.ToString(), TargetTick: tick,
+                InputType: payload.InputType, InputSize: payload.GetPayloadBytes().Length,
+                ContractIndex: ContractIndex)))
+        {
+            _error = "Cancelled by user."; return;
+        }
         var tx = Seed.CreateAndSignTransaction(dest, amount, tick, payload);
         var result = await Backend.BroadcastTransactionAsync(tx);
         _result = result.TransactionId;
@@ -432,10 +467,17 @@ else
                 Option1Desc = PackString(_ceOption1, 2, 32),
             };
 
+            // CreateEvent requires invocationReward >= ceil(duration_days) * mFeePerDay
+            // (Quottery.h:2134-2144). Send exactly that — the contract refunds any excess.
+            if (_basicInfo == null) { _error = "Couldn't read Quottery BasicInfo — needed to compute the CreateEvent fee."; return; }
+            var durationDays = (long)Math.Ceiling((_ceEndDate.ToUniversalTime() - DateTime.UtcNow).TotalDays);
+            if (durationDays < 1) durationDays = 1;
+            var createFee = (long)_basicInfo.Value.feePerDay * durationDays;
+
             var tick = await GetTick();
             var payload = new Qubic.Core.Contracts.Quottery.CreateEventPayload { Qei = qei };
             var tagLabel = KnownTags.FirstOrDefault(t => t.Id == tagId)?.Name ?? $"tag {tagId}";
-            await Broadcast(0, tick, payload, $"Quottery CreateEvent ({tagLabel}): {_ceDesc.Trim()}");
+            await Broadcast(createFee, tick, payload, $"Quottery CreateEvent ({tagLabel}, fee {createFee:N0} QU): {_ceDesc.Trim()}");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
@@ -519,18 +561,41 @@ else
         _activeTab = "Place Order";
     }
 
+    // Hardcoded fees the contract enforces directly (Quottery.h):
+    //   ResolveDispute: invocationReward >= 10_000_000 QU (line 1799-1801); the reward is fully refunded.
+    //   UserClaimReward: invocationReward == 1_000_000 QU (line 1549).
+    private const long ResolveDisputeMinAmount = 10_000_000;
+    private const long ClaimRewardAmount = 1_000_000;
+
+    private bool RequireAntiSpam(out long amount, string procedureName)
+    {
+        amount = 0;
+        if (_basicInfo == null) { _error = $"Couldn't read Quottery BasicInfo — needed for {procedureName} antiSpamAmount."; return false; }
+        amount = (long)_basicInfo.Value.antiSpam;
+        return true;
+    }
+
+    private bool RequireDisputeDeposit(out long amount, string procedureName)
+    {
+        amount = 0;
+        if (_basicInfo == null) { _error = $"Couldn't read Quottery BasicInfo — needed for {procedureName} dispute deposit."; return false; }
+        amount = (long)_basicInfo.Value.disputeDeposit;
+        return true;
+    }
+
     private async Task PlaceOrder()
     {
         _sending = true; _error = null; _result = null;
         try
         {
+            if (!RequireAntiSpam(out var fee, "Place Order")) return;
             var tick = await GetTick();
             Qubic.Core.Payloads.ITransactionPayload payload = _orderSide == SideAsk
                 ? new Qubic.Core.Contracts.Quottery.AddToAskOrderPayload
                     { EventId = (ulong)_eventId, Option = (ulong)_option, Amount = (ulong)_amount, Price = _price }
                 : new Qubic.Core.Contracts.Quottery.AddToBidOrderPayload
                     { EventId = (ulong)_eventId, Option = (ulong)_option, Amount = _amount, Price = _price };
-            await Broadcast(0, tick, payload, $"Quottery {_orderSide.ToUpper()} order: event {_eventId} option {_option} {_amount}@{_price}");
+            await Broadcast(fee, tick, payload, $"Quottery {_orderSide.ToUpper()} order (antiSpam {fee:N0}): event {_eventId} option {_option} {_amount}@{_price}");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
@@ -541,13 +606,14 @@ else
         _sending = true; _error = null; _result = null;
         try
         {
+            if (!RequireAntiSpam(out var fee, "Remove Order")) return;
             var tick = await GetTick();
             Qubic.Core.Payloads.ITransactionPayload payload = _orderSide == SideAsk
                 ? new Qubic.Core.Contracts.Quottery.RemoveAskOrderPayload
                     { EventId = (ulong)_eventId, Option = (ulong)_option, Amount = (ulong)_amount, Price = _price }
                 : new Qubic.Core.Contracts.Quottery.RemoveBidOrderPayload
                     { EventId = (ulong)_eventId, Option = (ulong)_option, Amount = (ulong)_amount, Price = _price };
-            await Broadcast(0, tick, payload, $"Quottery remove {_orderSide.ToUpper()} order: event {_eventId} option {_option} {_amount}@{_price}");
+            await Broadcast(fee, tick, payload, $"Quottery remove {_orderSide.ToUpper()} order (antiSpam {fee:N0}): event {_eventId} option {_option} {_amount}@{_price}");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
@@ -558,9 +624,12 @@ else
         _sending = true; _error = null; _result = null;
         try
         {
+            // PublishResult requires invocationReward EXACTLY == mDepositAmountForDispute
+            // (Quottery.h:2207). The deposit is held until TryFinalizeEvent refunds it (if no dispute).
+            if (!RequireDisputeDeposit(out var deposit, "Publish Result")) return;
             var tick = await GetTick();
             var payload = new Qubic.Core.Contracts.Quottery.PublishResultPayload { EventId = (ulong)_eventId, Option = (ulong)_option };
-            await Broadcast(0, tick, payload, $"Quottery Publish Result: event {_eventId}, winning option {_option}");
+            await Broadcast(deposit, tick, payload, $"Quottery Publish Result (deposit {deposit:N0}): event {_eventId}, winning option {_option}");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
@@ -571,6 +640,7 @@ else
         _sending = true; _error = null; _result = null;
         try
         {
+            // TryFinalizeEvent doesn't require any invocationReward (Quottery.h:1941-).
             var tick = await GetTick();
             var payload = new Qubic.Core.Contracts.Quottery.TryFinalizeEventPayload { EventId = (ulong)_eventId };
             await Broadcast(0, tick, payload, $"Quottery Try Finalize Event {_eventId}");
@@ -584,10 +654,13 @@ else
         _sending = true; _error = null; _result = null;
         try
         {
-            if (_disputeDeposit <= 0) { _error = "Deposit amount required to open a dispute."; return; }
+            // Dispute requires invocationReward EXACTLY == mDepositAmountForDispute
+            // (Quottery.h:1497). Use the contract's BasicInfo value rather than a user-typed one
+            // so the deposit always matches and is never rejected.
+            if (!RequireDisputeDeposit(out var deposit, "Open Dispute")) return;
             var tick = await GetTick();
             var payload = new Qubic.Core.Contracts.Quottery.DisputePayload { EventId = (ulong)_eventId };
-            await Broadcast(_disputeDeposit, tick, payload, $"Quottery Open Dispute on event {_eventId} (deposit {_disputeDeposit:N0} QU)");
+            await Broadcast(deposit, tick, payload, $"Quottery Open Dispute on event {_eventId} (deposit {deposit:N0} QU)");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
@@ -598,9 +671,11 @@ else
         _sending = true; _error = null; _result = null;
         try
         {
+            // ResolveDispute requires invocationReward >= 10_000_000 QU (Quottery.h:1799-1801)
+            // and refunds the full reward (line 1819).
             var tick = await GetTick();
             var payload = new Qubic.Core.Contracts.Quottery.ResolveDisputePayload { EventId = (ulong)_eventId, Vote = _disputeVote };
-            await Broadcast(0, tick, payload, $"Quottery Resolve Dispute event {_eventId}, vote {_disputeVote}");
+            await Broadcast(ResolveDisputeMinAmount, tick, payload, $"Quottery Resolve Dispute event {_eventId}, vote {_disputeVote} (deposit {ResolveDisputeMinAmount:N0} QU, refunded)");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
@@ -611,9 +686,10 @@ else
         _sending = true; _error = null; _result = null;
         try
         {
+            // UserClaimReward requires invocationReward EXACTLY == 1_000_000 QU (Quottery.h:1549).
             var tick = await GetTick();
             var payload = new Qubic.Core.Contracts.Quottery.UserClaimRewardPayload { EventId = (ulong)_eventId };
-            await Broadcast(0, tick, payload, $"Quottery Claim Reward event {_eventId}");
+            await Broadcast(ClaimRewardAmount, tick, payload, $"Quottery Claim Reward event {_eventId} (fee {ClaimRewardAmount:N0} QU)");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }

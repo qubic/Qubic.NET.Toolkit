@@ -4,6 +4,7 @@
 @inject TickMonitorService TickMonitor
 @inject TransactionTrackerService TxTracker
 @inject QubicSettingsService Settings
+@inject TransactionConfirmService Confirm
 
 <h4>QEarn Staking</h4>
 <p class="text-muted">Lock QU to earn rewards, unlock, and query staking information.</p>
@@ -172,6 +173,14 @@
     private async Task Broadcast(long amount, uint tick, Qubic.Core.Payloads.ITransactionPayload payload, string desc)
     {
         var dest = Qubic.Core.Entities.QubicIdentity.FromPublicKey(Qubic.Core.QubicContracts.GetContractPublicKey(ContractIndex));
+        if (!await Confirm.ConfirmAsync(new TransactionPreview(
+                Action: desc, Amount: amount, Source: Seed.Identity?.ToString() ?? "(no seed)",
+                Destination: dest.ToString(), TargetTick: tick,
+                InputType: payload.InputType, InputSize: payload.GetPayloadBytes().Length,
+                ContractIndex: ContractIndex)))
+        {
+            _error = "Cancelled by user."; return;
+        }
         var tx = Seed.CreateAndSignTransaction(dest, amount, tick, payload);
         var result = await Backend.BroadcastTransactionAsync(tx);
         _result = result.TransactionId;
