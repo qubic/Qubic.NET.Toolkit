@@ -51,8 +51,35 @@ else
                     </div>
                     <div class="mb-2"><label class="form-label-sm">End Date (UTC) — bit-packed as Qubic <code>DateAndTime</code></label>
                         <input type="datetime-local" class="form-control form-control-sm" @bind="_ceEndDate" /></div>
-                    <div class="mb-2"><label class="form-label-sm">Description (max 128 chars)</label>
-                        <input class="form-control form-control-sm" maxlength="128" @bind="_ceDesc" /></div>
+                    <div class="mb-2">
+                        <label class="form-label-sm">
+                            Description (max 126 chars — last 2 bytes of the 128-byte slot are reserved for the tag ID)
+                        </label>
+                        <input class="form-control form-control-sm" maxlength="126" @bind="_ceDesc" />
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-6">
+                            <label class="form-label-sm">Tag</label>
+                            <select class="form-select form-select-sm" @bind="_ceTagPreset">
+                                @foreach (var t in KnownTags)
+                                {
+                                    <option value="@t.Id">@($"{t.Id} — {t.Name}")</option>
+                                }
+                                <option value="-1">Custom...</option>
+                            </select>
+                        </div>
+                        @if (_ceTagPreset == -1)
+                        {
+                            <div class="col-md-6">
+                                <label class="form-label-sm">Custom Tag ID (u16)</label>
+                                <input type="number" class="form-control form-control-sm" min="0" max="65535" @bind="_ceCustomTag" />
+                            </div>
+                        }
+                    </div>
+                    <div class="small text-muted mb-2">
+                        Tag ID is packed as little-endian uint16 into the last 2 bytes of the description
+                        (positions 126–127), matching qubic-cli's <code>quotteryCreateEvent</code>.
+                    </div>
                     <div class="row g-2 mb-2">
                         <div class="col"><label class="form-label-sm">Option 0 Label (max 64 chars)</label>
                             <input class="form-control form-control-sm" maxlength="64" @bind="_ceOption0" /></div>
@@ -89,6 +116,7 @@ else
                                 <thead>
                                     <tr>
                                         <th>ID</th>
+                                        <th>Tag</th>
                                         <th>Description</th>
                                         <th>Option 0</th>
                                         <th>Option 1</th>
@@ -103,6 +131,7 @@ else
                                                 <a href="" @onclick="() => UseEventId(ev.Id)" @onclick:preventDefault
                                                    class="text-primary text-decoration-none">@ev.Id</a>
                                             </td>
+                                            <td>@ev.Tag</td>
                                             <td>@ev.Desc</td>
                                             <td>@ev.Opt0</td>
                                             <td>@ev.Opt1</td>
@@ -265,12 +294,27 @@ else
     private string _ceDesc = "";
     private string _ceOption0 = "";
     private string _ceOption1 = "";
+    // Tag ID is hidden in desc[126..128] as a little-endian uint16 (matches
+    // qubic-cli's quotteryCreateEvent — see qubic-cli/quottery.cpp:226-229).
+    // Selecting "Custom..." in the dropdown sets _ceTagPreset = -1 and reveals _ceCustomTag.
+    private int _ceTagPreset = 2; // default: QUBIC
+    private int _ceCustomTag;
+
+    private record QuotteryTag(int Id, string Name);
+    private static readonly QuotteryTag[] KnownTags =
+    [
+        new(1, "Crypto"),
+        new(2, "QUBIC"),
+        new(3, "BTC"),
+        new(4, "ETH"),
+        new(5, "SOL"),
+    ];
 
     // Active events browser
     private bool _loadingEvents;
     private string? _eventsError;
     private List<ActiveEventRow>? _activeEvents;
-    private record ActiveEventRow(ulong Id, string Desc, string Opt0, string Opt1, string EndDate);
+    private record ActiveEventRow(ulong Id, string Tag, string Desc, string Opt0, string Opt1, string EndDate);
 
     // Packs a DateTime (treated as UTC) into the Qubic DateAndTime u64 layout
     // from qpi.h:244 — bit positions: year<<46, month<<42, day<<37, hour<<32,
@@ -365,20 +409,33 @@ else
             { _error = "Both option labels required."; return; }
             if (_ceEndDate <= DateTime.UtcNow) { _error = "End Date must be in the future."; return; }
 
+            var tagIdRaw = _ceTagPreset == -1 ? _ceCustomTag : _ceTagPreset;
+            if (tagIdRaw < 0 || tagIdRaw > ushort.MaxValue)
+            { _error = $"Tag ID must fit in a uint16 (0–{ushort.MaxValue})."; return; }
+            var tagId = (ushort)tagIdRaw;
+
+            var desc = PackString(_ceDesc, 4, 32);
+            // Inject tagId LE into the last 2 bytes of the 128-byte description slot.
+            // 4 × 32 layout: byte 126 = slot[3][30], byte 127 = slot[3][31].
+            // Matches qubic-cli/quottery.cpp:226-229.
+            desc[3][30] = (byte)(tagId & 0xFF);
+            desc[3][31] = (byte)((tagId >> 8) & 0xFF);
+
             // Eid and OpenDate are overridden by the contract; pass 0/0.
             var qei = new Qubic.Core.Contracts.Quottery.CreateEventPayloadQtryEventInfo
             {
                 Eid = 0,
                 OpenDate = 0,
                 EndDate = PackDateAndTime(_ceEndDate),
-                Desc = PackString(_ceDesc, 4, 32),
+                Desc = desc,
                 Option0Desc = PackString(_ceOption0, 2, 32),
                 Option1Desc = PackString(_ceOption1, 2, 32),
             };
 
             var tick = await GetTick();
             var payload = new Qubic.Core.Contracts.Quottery.CreateEventPayload { Qei = qei };
-            await Broadcast(0, tick, payload, $"Quottery CreateEvent: {_ceDesc.Trim()}");
+            var tagLabel = KnownTags.FirstOrDefault(t => t.Id == tagId)?.Name ?? $"tag {tagId}";
+            await Broadcast(0, tick, payload, $"Quottery CreateEvent ({tagLabel}): {_ceDesc.Trim()}");
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _sending = false; }
@@ -418,10 +475,16 @@ else
                     var span = new ReadOnlySpan<byte>(batchOut, j * eiSize, eiSize);
                     var eid = BitConverter.ToUInt64(span.Slice(0, 8));
                     var endDate = BitConverter.ToUInt64(span.Slice(16, 8));
-                    var desc = ReadString(span.Slice(24, 128));
+                    // Description occupies 128 bytes but the last 2 are a packed
+                    // little-endian uint16 tag ID. Read the tag, then truncate.
+                    var descSpan = span.Slice(24, 128);
+                    var tagId = (ushort)(descSpan[126] | (descSpan[127] << 8));
+                    var tagLabel = KnownTags.FirstOrDefault(t => t.Id == tagId)?.Name
+                                   ?? $"#{tagId}";
+                    var desc = ReadString(descSpan.Slice(0, 126));
                     var opt0 = ReadString(span.Slice(152, 64));
                     var opt1 = ReadString(span.Slice(216, 64));
-                    rows.Add(new ActiveEventRow(eid, desc, opt0, opt1, FormatDateAndTime(endDate)));
+                    rows.Add(new ActiveEventRow(eid, tagLabel, desc, opt0, opt1, FormatDateAndTime(endDate)));
                 }
             }
             _activeEvents = rows;
