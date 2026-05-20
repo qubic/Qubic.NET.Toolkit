@@ -1,4 +1,4 @@
-# Qubic.Net.Toolkit Release Note v0.1.0
+# Qubic.Net.Toolkit Release Note v0.6.0
 
 > [!NOTE]
 > **This is beta software.** Errors may occur — use with caution.
@@ -9,6 +9,14 @@
 ## What is Qubic.Net Toolkit?
 
 A cross-platform desktop application for interacting with the Qubic network. Runs as a native desktop window on Windows, macOS, and Linux — or as a local web app in your browser with `--server` mode.
+
+## What's new in v0.6.0
+
+- 🛡️ **Pre-broadcast confirmation modal** — every action that signs and sends a transaction now opens a preview dialog showing the amount, target tick, destination, and InputType before the seed signs anything. Applies to 21 transaction-sending pages across Send / Swap / Stake / Contracts / Tools.
+- 🎯 **Quottery: correct invocation rewards on every procedure** — fixes the silent-rejection bug where actions like `PublishResult`, `AddToAskOrder`, etc. were sending `0 QU` to a contract that requires a specific amount. Toolkit now reads the live `BasicInfo` and sends `mDepositAmountForDispute` / `mAntiSpamAmount` / `ceil(duration_days) × mFeePerDay` etc. as required per-procedure.
+- 🏷️ **Quottery: tag ID on Create Event** — packs a `uint16` tag into bytes 126–127 of the description slot, matching `qubic-cli`'s `quotteryCreateEvent`. Known IDs (Crypto / QUBIC / BTC / ETH / SOL) plus custom u16 support. Browse Active Events decodes the tag back to a name.
+- 🏷️ **Sidebar version footer** — toolkit version is pinned at the bottom of the navigation, read at startup from the assembly.
+- 🧰 **Internals**: `Qubic.Net` deps consumed as the NuGet package `Qubic.Services 1.4.1` (pulls Core / Crypto / Network / Rpc / Bob 1.5.1 / Serialization transitively). The `deps/Qubic.Net` submodule was removed in 0.5.0 — local development against unpublished packages uses the local-feed instructions in `NuGet.config`.
 
 ## Highlights
 
@@ -25,11 +33,13 @@ A cross-platform desktop application for interacting with the Qubic network. Run
 - **Offline transaction** builder for air-gapped signing
 - Message signing and verification
 - Transaction history and tracking with **auto-resend**
+- **Pre-broadcast confirmation modal** — preview every signed transaction (amount, destination, InputType) before it leaves the wallet
 
 **Smart Contracts**
 - Interactive contract browser with auto-discovered functions and procedures
 - DeFi suite: Qx, QSwap, QEarn, QBond, Quottery
 - Utilities: QUtil, MSVault, Nostromo, QVault
+- **Quottery**: order-book betting (place/remove ask & bid), create events with tag IDs, publish/finalize results, dispute flow — all with contract-correct invocation rewards
 
 **Explorer**
 - Balance lookup and asset portfolio
@@ -53,10 +63,10 @@ A cross-platform desktop application for interacting with the Qubic network. Run
 
 | Platform | File |
 |----------|------|
-| Windows x64 | `Qubic.Net.Toolkit-win-x64.zip` |
-| macOS Apple Silicon (M1/M2/M3/M4) | `Qubic.Net.Toolkit-osx-arm64.zip` |
-| macOS Intel | `Qubic.Net.Toolkit-osx-x64.zip` |
-| Linux x64 | `Qubic.Net.Toolkit-linux-x64.zip` |
+| Windows x64 | `Qubic.Net.Toolkit-0.6.0-win-x64.zip` |
+| macOS Apple Silicon (M1/M2/M3/M4) | `Qubic.Net.Toolkit-0.6.0-osx-arm64.zip` |
+| macOS Intel | `Qubic.Net.Toolkit-0.6.0-osx-x64.zip` |
+| Linux x64 | `Qubic.Net.Toolkit-0.6.0-linux-x64.zip` |
 
 ### Verify your download
 
@@ -65,24 +75,24 @@ A cross-platform desktop application for interacting with the Qubic network. Run
 
 ```bash
 # Windows (PowerShell)
-Get-FileHash Qubic.Net.Toolkit-win-x64.zip -Algorithm SHA256
+Get-FileHash Qubic.Net.Toolkit-0.6.0-win-x64.zip -Algorithm SHA256
 
 # macOS / Linux
-sha256sum Qubic.Net.Toolkit-*.zip
+sha256sum Qubic.Net.Toolkit-0.6.0-*.zip
 ```
 
 | File | SHA-256 |
 |------|---------|
-| `Qubic.Net.Toolkit-win-x64.zip` | `67aae642ac48aac74d146bfe9cd81fa31175e4d0eff8a568575c654162d641dc` |
-| `Qubic.Net.Toolkit-osx-arm64.zip` | `77c1bb66155948328cf87250bfca0551e7cb673816e8647dbcc98f07e2190953` |
-| `Qubic.Net.Toolkit-osx-x64.zip` | `c064e5a0abbe2c10b58d9b4edd60134264a3f4416e3bcdff6f4b12f910fd41fb` |
-| `Qubic.Net.Toolkit-linux-x64.zip` | `116288ed157821e6ce83b0219dcd2cfcc66b0b2ed270896f42d7c92b6bf31d92` |
+| `Qubic.Net.Toolkit-0.6.0-win-x64.zip` | `cae7cce41fc18715b1fa995bb66fa078802d3d4135a4978963ab243086ae3d92` |
+| `Qubic.Net.Toolkit-0.6.0-osx-arm64.zip` | `d87eea6e7ea07d384fa1b988f3619212870cebb13a2e33141e22a2cae1f5f9dc` |
+| `Qubic.Net.Toolkit-0.6.0-osx-x64.zip` | `eb59a9c4bd90532dad85a8a685e2fdf501b0b2d6543cd4bd9ff3c6c6de020797` |
+| `Qubic.Net.Toolkit-0.6.0-linux-x64.zip` | `8e7207247eb4bd9faff95725d10d0c3e642fd7ce5a028e30af5ac010270ed2c6` |
 
 ### Running
 
 Each zip extracts into a `Qubic.Net.Toolkit-{platform}` folder.
 
-**Windows:** Extract `Qubic.Net.Toolkit-win-x64.zip`, open the folder, and run `Qubic.Net.Toolkit.exe`
+**Windows:** Extract `Qubic.Net.Toolkit-0.6.0-win-x64.zip`, open the folder, and run `Qubic.Net.Toolkit.exe`
 
 **macOS**:
 
@@ -92,8 +102,8 @@ Each zip extracts into a `Qubic.Net.Toolkit-{platform}` folder.
 Download `osx-arm64` for Apple Silicon (M1/M2/M3/M4) or `osx-x64` for Intel Macs.
 
 ```bash
-unzip Qubic.Net.Toolkit-osx-arm64.zip
-cd Qubic.Net.Toolkit-osx-arm64
+unzip Qubic.Net.Toolkit-0.6.0-osx-arm64.zip
+cd Qubic.Net.Toolkit-0.6.0-osx-arm64
 chmod +x Qubic.Net.Toolkit
 codesign --force --deep -s - Qubic.Net.Toolkit
 xattr -d com.apple.quarantine Qubic.Net.Toolkit
@@ -117,8 +127,8 @@ Desktop mode requires **GLIBC 2.38+** and **WebKitGTK** (`libwebkit2gtk-4.1-0`).
 # Install WebKitGTK (Ubuntu/Debian)
 sudo apt install libwebkit2gtk-4.1-0
 
-unzip Qubic.Net.Toolkit-linux-x64.zip
-cd Qubic.Net.Toolkit-linux-x64
+unzip Qubic.Net.Toolkit-0.6.0-linux-x64.zip
+cd Qubic.Net.Toolkit-0.6.0-linux-x64
 chmod +x Qubic.Net.Toolkit
 ./Qubic.Net.Toolkit
 ```
