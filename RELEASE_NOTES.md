@@ -1,3 +1,20 @@
+# Qubic.Net.Toolkit Release Note v0.6.1
+
+> [!NOTE]
+> **This is beta software.** Errors may occur — use with caution.
+
+> [!IMPORTANT]
+> **Seed Safety:** The Toolkit never shares or sends your seed to the network. Your seed is only held locally in memory while the application runs. Close the app when not actively using it. Qubic will never contact you to ask for your seed — **DO NOT SHARE your seed with anyone.**
+
+## What's new in v0.6.1
+
+- 🔎 **QEarn Staking → Address Lookup** — new default tab on `/tx/qearn`. Paste any Qubic identity and see every epoch where the address has an active lock: amount, current week, weeks remaining, epoch yield (APY), estimated full reward, and the early-unlock reward at today's schedule percentage. Plus the historical fully-unlocked / early-unlocked totals from `GetEndedStatus`. Read-only — no seed required, so you can inspect any address (yours, a friend's, a contract treasury). Mirrors the layout of the wallet's "Your Staking Summary" but works for arbitrary addresses.
+- 🛡️ **Security (transitive): FourQ signature canonicalisation + low-order public-key rejection.** Pulls in `Qubic.Services 1.5.2` → `Qubic.Crypto 1.5.2`, which contains the two CVE-class fixes from qubic/core (PR #879 canonical `S < curve_order`, PR #921 reject the identity point `{1,0,0,0}` and the rest of the 392-element cofactor subgroup). The latter was actively exploited on the live network — attackers forged signatures spending QU from the QX contract address. The Toolkit's verify-time code paths are now hardened against both.
+
+## What was new in v0.6.0
+
+---
+
 # Qubic.Net.Toolkit Release Note v0.6.0
 
 > [!NOTE]

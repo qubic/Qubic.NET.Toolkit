@@ -18,9 +18,134 @@
     }
 </ul>
 
-<div class="row"><div class="col-md-8">
+<div class="row"><div class="col-md-10">
     @switch (_activeTab)
     {
+        case "Address Lookup":
+            <div class="card"><div class="card-header">Address Lookup</div><div class="card-body">
+                <p class="small text-muted">
+                    Enter any Qubic identity to see every epoch where it has an active QEarn lock — amount, week,
+                    yield/APY, estimated full and early-unlock rewards — plus the historical ended-status totals.
+                    Read-only; the lookup does not require a seed.
+                </p>
+
+                <div class="mb-3">
+                    <label class="form-label-sm">Identity</label>
+                    <div class="d-flex gap-2">
+                        <input class="form-control form-control-sm mono @IdentityValidation.CssClass(_lookupIdentity)"
+                               @bind="_lookupIdentity" @bind:event="oninput" placeholder="IDENTITY..." />
+                        <button class="btn btn-primary btn-sm" @onclick="LoadAddressData"
+                                disabled="@(_loadingAddress || IdentityValidation.Validate(_lookupIdentity) != null)">
+                            @(_loadingAddress ? "Loading..." : "Lookup")
+                        </button>
+                    </div>
+                    @if (IdentityValidation.Validate(_lookupIdentity) is { } pkErr && !string.IsNullOrEmpty(_lookupIdentity))
+                    {
+                        <div class="form-text text-warning">@pkErr</div>
+                    }
+                </div>
+
+                @if (_addressError != null)
+                {
+                    <div class="alert alert-danger">@_addressError</div>
+                }
+
+                @if (_loadingAddress)
+                {
+                    <div class="text-muted"><span class="spinner-border spinner-border-sm me-1"></span> Querying QEarn contract...</div>
+                }
+                else if (_addressLooked)
+                {
+                    @if (_addressLocks.Count == 0 && _addressEndedStatus is not { } esNull)
+                    {
+                        <div class="alert alert-secondary">No active locks or ended-status data for this address.</div>
+                    }
+                    else
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-sm table-hover mb-2">
+                                <thead>
+                                    <tr>
+                                        <th>Lock Epoch</th>
+                                        <th>Locked Amount</th>
+                                        <th title="Total QU locked by all users in this epoch">Epoch Total</th>
+                                        <th>Week</th>
+                                        <th>Remaining</th>
+                                        <th title="Annualised yield for the epoch">APY</th>
+                                        <th>Est. Full Reward</th>
+                                        <th title="Reward if unlocked now based on the early-unlock schedule">Early Unlock</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var l in _addressLocks)
+                                    {
+                                        var apyPct = l.Yield > 0 ? (double)l.Yield / 100_000 : 0;
+                                        var earlyPct = GetEarlyUnlockRewardPercent(l.Week);
+                                        var earlyReward = l.EstReward * (ulong)earlyPct / 100;
+                                        <tr>
+                                            <td class="mono">@l.Epoch</td>
+                                            <td class="mono">@l.Amount.ToString("N0") QU</td>
+                                            <td class="mono text-muted"
+                                                title="@(l.EpochCurrentLocked.ToString("N0")) QU currently locked (bonus: @(l.EpochBonusAmount.ToString("N0")) QU)">
+                                                @(l.EpochCurrentLocked > 0 ? $"{l.EpochCurrentLocked:N0}" : "—")
+                                            </td>
+                                            <td>@l.Week / 52</td>
+                                            <td>@l.Remaining week@(l.Remaining != 1 ? "s" : "")</td>
+                                            <td class="mono">@(l.Yield > 0 ? $"{apyPct:F2}%" : "—")</td>
+                                            <td class="mono text-success">@(l.EstReward > 0 ? $"+{l.EstReward:N0} QU" : "—")</td>
+                                            <td class="mono @(earlyPct < 100 ? "text-warning" : "text-success")"
+                                                title="@earlyPct% of full reward">
+                                                @(l.EstReward > 0 ? $"+{earlyReward:N0} QU ({earlyPct}%)" : "—")
+                                            </td>
+                                        </tr>
+                                    }
+                                    @if (_addressEndedStatus is { } es)
+                                    {
+                                        @if (es.fullyUnlocked > 0)
+                                        {
+                                            <tr class="table-success">
+                                                <td colspan="4" class="mono">Fully Unlocked (historical): @es.fullyUnlocked.ToString("N0") QU</td>
+                                                <td colspan="4" class="mono">Rewarded: @es.fullyRewarded.ToString("N0") QU</td>
+                                            </tr>
+                                        }
+                                        @if (es.earlyUnlocked > 0)
+                                        {
+                                            <tr class="table-warning">
+                                                <td colspan="4" class="mono">Early Unlocked (historical): @es.earlyUnlocked.ToString("N0") QU</td>
+                                                <td colspan="4" class="mono">Rewarded: @es.earlyRewarded.ToString("N0") QU</td>
+                                            </tr>
+                                        }
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+
+                        @if (_addressLocks.Count > 0)
+                        {
+                            <div class="small text-muted">
+                                Total locked:
+                                <strong>@_addressLocks.Sum(l => (long)l.Amount).ToString("N0") QU</strong>
+                                across <strong>@_addressLocks.Count</strong> epoch@(_addressLocks.Count != 1 ? "s" : "").
+                                @if (_addressLocks.Sum(l => (long)l.EstReward) > 0)
+                                {
+                                    <span class="ms-2">
+                                        | Est. total reward at full unlock:
+                                        <strong class="text-success">
+                                            +@_addressLocks.Sum(l => (long)l.EstReward).ToString("N0") QU
+                                        </strong>
+                                    </span>
+                                }
+                                @if (_lookupEpoch > 0)
+                                {
+                                    <span class="ms-2">| Current epoch: <strong>@_lookupEpoch</strong></span>
+                                }
+                            </div>
+                        }
+                    }
+                }
+            </div></div>
+            break;
+
         case "Lock":
             <div class="card"><div class="card-header">Lock QU</div><div class="card-body">
                 <p class="small text-muted">Lock QU into QEarn smart contract to earn staking rewards.</p>
@@ -145,12 +270,25 @@
 </div></div>
 
 @code {
-    private static readonly string[] _tabs = ["Lock", "Unlock", "Query"];
-    private string _activeTab = "Lock";
+    private static readonly string[] _tabs = ["Address Lookup", "Lock", "Unlock", "Query"];
+    private string _activeTab = "Address Lookup";
     private bool _sending;
     private string? _result;
     private string? _error;
     private const int ContractIndex = 9;
+
+    // Address Lookup
+    private string? _lookupIdentity;
+    private bool _loadingAddress;
+    private bool _addressLooked;
+    private string? _addressError;
+    private uint _lookupEpoch;
+    private List<AddressLock> _addressLocks = [];
+    private (ulong fullyUnlocked, ulong fullyRewarded, ulong earlyUnlocked, ulong earlyRewarded)? _addressEndedStatus;
+
+    private record AddressLock(
+        uint Epoch, ulong Amount, int Week, int Remaining, ulong Yield, ulong EstReward,
+        ulong EpochTotalLocked, ulong EpochCurrentLocked, ulong EpochBonusAmount);
 
     // Lock
     private long _lockAmount;
@@ -267,6 +405,145 @@
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _querying = false; }
+    }
+
+    /// <summary>
+    /// Loads the entered identity's full QEarn picture in one round-trip-batched call:
+    /// 1) GetUserLockStatus (function 4) → 52-bit bitmask "locked N weeks ago".
+    /// 2) For each set bit, GetUserLockedInfo (function 2) and GetLockInfoPerEpoch (function 1)
+    ///    in parallel, so the page shows amount + yield/APY per epoch.
+    /// 3) GetEndedStatus (function 5) for the historical fully/early-unlocked totals.
+    /// Mirrors the wallet's auto-load logic, but parameterised on the entered identity.
+    /// </summary>
+    private async Task LoadAddressData()
+    {
+        _loadingAddress = true;
+        _addressError = null;
+        _addressLocks = [];
+        _addressEndedStatus = null;
+        _addressLooked = false;
+
+        try
+        {
+            var err = IdentityValidation.Validate(_lookupIdentity);
+            if (err != null) { _addressError = "Identity: " + err; return; }
+            var pk = Qubic.Core.Entities.QubicIdentity.FromIdentity(_lookupIdentity!.Trim()).PublicKey;
+
+            uint currentEpoch = TickMonitor.IsConnected ? TickMonitor.Epoch : 0u;
+            if (currentEpoch == 0)
+            {
+                try { currentEpoch = (await Backend.GetTickInfoAsync()).Epoch; } catch { }
+            }
+            if (currentEpoch == 0) { _addressError = "Could not determine current epoch — check backend connection."; return; }
+            _lookupEpoch = currentEpoch;
+
+            // 1. Lock-status bitmask: bit N == "locked N weeks ago, currently in week N+1".
+            var lockInput = new Qubic.Core.Contracts.Qearn.GetUserLockStatusInput { User = pk }.ToBytes();
+            var lockResult = await Backend.QuerySmartContractAsync(ContractIndex, 4, lockInput);
+            if (lockResult.Length < 8) { _addressError = "No lock-status data returned for this identity."; }
+            else
+            {
+                var ls = Qubic.Core.Contracts.Qearn.GetUserLockStatusOutput.FromBytes(lockResult);
+
+                var slots = new List<(int Weeks, uint LockEpoch)>();
+                for (int i = 0; i < 52; i++)
+                {
+                    if ((ls.Status >> i & 1) == 1)
+                        slots.Add((i, currentEpoch - (uint)i));
+                }
+
+                // 2. Parallel per-epoch queries: amounts and yield/totals.
+                var amountTasks = slots.Select(s =>
+                    Backend.QuerySmartContractAsync(ContractIndex, 2,
+                        new Qubic.Core.Contracts.Qearn.GetUserLockedInfoInput { User = pk, Epoch = s.LockEpoch }.ToBytes())).ToArray();
+
+                var distinctEpochs = slots.Select(s => s.LockEpoch).Distinct().ToArray();
+                var yieldTasks = distinctEpochs.ToDictionary(
+                    e => e,
+                    e => Backend.QuerySmartContractAsync(ContractIndex, 1,
+                        new Qubic.Core.Contracts.Qearn.GetLockInfoPerEpochInput { Epoch = e }.ToBytes()));
+
+                await Task.WhenAll(amountTasks.Concat(yieldTasks.Values));
+
+                for (int i = 0; i < slots.Count; i++)
+                {
+                    var slot = slots[i];
+
+                    ulong amount = 0;
+                    try
+                    {
+                        var data = amountTasks[i].Result;
+                        if (data.Length >= 8)
+                            amount = Qubic.Core.Contracts.Qearn.GetUserLockedInfoOutput.FromBytes(data).LockedAmount;
+                    }
+                    catch { }
+
+                    ulong yield = 0, epochTotal = 0, epochCurrent = 0, epochBonus = 0;
+                    try
+                    {
+                        var data = yieldTasks[slot.LockEpoch].Result;
+                        if (data.Length >= 40)
+                        {
+                            var info = Qubic.Core.Contracts.Qearn.GetLockInfoPerEpochOutput.FromBytes(data);
+                            yield = info.Yield;
+                            epochTotal = info.LockedAmount;
+                            epochCurrent = info.CurrentLockedAmount;
+                            epochBonus = info.BonusAmount;
+                        }
+                    }
+                    catch { }
+
+                    // Reward formula mirrors the wallet: amount × yield / 10_000_000
+                    // (yield is in 1/100000 percent, scaled over the year).
+                    var estReward = yield > 0 ? amount * yield / 10_000_000UL : 0UL;
+                    var weeksLocked = slot.Weeks;
+                    var remaining = 52 - weeksLocked;
+                    _addressLocks.Add(new AddressLock(slot.LockEpoch, amount, weeksLocked, remaining,
+                        yield, estReward, epochTotal, epochCurrent, epochBonus));
+                }
+                _addressLocks = _addressLocks.OrderBy(l => l.Epoch).ToList();
+            }
+
+            // 3. Historical ended-status (completed unlocks across all past epochs).
+            try
+            {
+                var endedInput = new Qubic.Core.Contracts.Qearn.GetEndedStatusInput { User = pk }.ToBytes();
+                var endedResult = await Backend.QuerySmartContractAsync(ContractIndex, 5, endedInput);
+                if (endedResult.Length >= 32)
+                {
+                    var es = Qubic.Core.Contracts.Qearn.GetEndedStatusOutput.FromBytes(endedResult);
+                    _addressEndedStatus = (es.FullyUnlockedAmount, es.FullyRewardedAmount,
+                                            es.EarlyUnlockedAmount, es.EarlyRewardedAmount);
+                }
+            }
+            catch { }
+
+            _addressLooked = true;
+        }
+        catch (Exception ex) { _addressError = ex.Message; }
+        finally { _loadingAddress = false; }
+    }
+
+    /// <summary>
+    /// Percentage of full reward received if unlocking early at the given week,
+    /// per the QEarn contract's early-unlock schedule (mirrors the wallet's table).
+    /// </summary>
+    private static int GetEarlyUnlockRewardPercent(int w)
+    {
+        if (w >= 52) return 100;
+        if (w >= 48) return 55;
+        if (w >= 44) return 50;
+        if (w >= 40) return 45;
+        if (w >= 36) return 40;
+        if (w >= 32) return 35;
+        if (w >= 28) return 30;
+        if (w >= 24) return 25;
+        if (w >= 20) return 20;
+        if (w >= 16) return 15;
+        if (w >= 12) return 10;
+        if (w >= 8) return 5;
+        if (w >= 4) return 5;
+        return 0;
     }
 
     private List<KeyValuePair<string, string>> ParseQueryResult(int func, byte[] data)
