@@ -172,12 +172,7 @@
             var results = new List<GeneratedSeed>(count);
             for (int n = 0; n < count; n++)
             {
-                var randomBytes = new byte[55];
-                System.Security.Cryptography.RandomNumberGenerator.Fill(randomBytes);
-                var chars = new char[55];
-                for (int i = 0; i < 55; i++)
-                    chars[i] = (char)('a' + (randomBytes[i] % 26));
-                var seed = new string(chars);
+                var seed = Qubic.Core.QubicSeed.Generate();
                 var pubKey = _crypt.GetPublicKey(seed);
                 var identity = Qubic.Core.Entities.QubicIdentity.FromPublicKey(pubKey);
                 results.Add(new GeneratedSeed { Seed = seed, Identity = identity.ToString() });
